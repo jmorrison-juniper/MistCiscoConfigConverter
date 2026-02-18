@@ -1,0 +1,30 @@
+# compose.yml - Compatible with both Podman and Docker
+# Usage: podman-compose up -d
+#    or: docker compose up -d
+
+services:
+  converter:
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: mist-cisco-converter:latest
+    container_name: mist-cisco-converter
+    ports:
+      - "8000:8000"
+    environment:
+      - MIST_APITOKEN=${MIST_APITOKEN}
+      - MIST_HOST=${MIST_HOST:-api.mist.com}
+      - SECRET_KEY=${SECRET_KEY}
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data:Z
+      - ./input:/app/input:Z
+      - ./output:/app/output:Z
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

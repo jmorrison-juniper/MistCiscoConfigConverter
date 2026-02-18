@@ -1,0 +1,15 @@
+# Core dependencies
+mistapi>=0.59.0
+gunicorn>=21.0.0
+flask>=3.0.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# Production WSGI
+gevent>=24.0.0
+
+# Cisco config parsing
+ciscoconfparse2>=0.9.0
+ntc-templates>=8.0.0
+netutils>=1.17.0

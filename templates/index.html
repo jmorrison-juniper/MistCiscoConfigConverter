@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en" class="theme-{{ theme }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mist Cisco Config Converter</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/themes.css') }}">
+</head>
+<body class="theme-{{ theme }}">
+    <!-- Mist Connection Status Badge -->
+    <div id="mistStatus" class="mist-status loading" title="Checking Mist cloud connection...">
+        <span class="status-indicator"></span>
+        <span class="status-text">Checking...</span>
+    </div>
+
+    <h1>Mist Cisco Config Converter</h1>
+    <p class="subtitle">Convert Cisco IOS configurations to Juniper Mist format</p>
+    
+    <div class="container">
+        <!-- Method 1: Select from existing files -->
+        <div class="input-section">
+            <h2>Select Existing File</h2>
+            <div class="file-select-wrapper">
+                <label for="fileSelect" class="visually-hidden">Select a configuration file</label>
+                <select id="fileSelect" class="file-select" title="Select a configuration file from the input folder">
+                    <option value="">-- Select a config file --</option>
+                </select>
+                <button type="button" class="btn btn-secondary" id="refreshBtn" title="Refresh file list">Refresh</button>
+            </div>
+            <p class="help-text">Files from the INPUT folder</p>
+        </div>
+
+        <div class="divider">
+            <span>OR</span>
+        </div>
+
+        <!-- Method 2: Upload a new file -->
+        <div class="input-section">
+            <h2>Upload New File</h2>
+            <form id="uploadForm" enctype="multipart/form-data">
+                <div class="upload-area" id="dropZone">
+                    <p>Drag & drop your Cisco config file here</p>
+                    <p>or click to browse</p>
+                    <label for="configFile" class="visually-hidden">Choose a Cisco configuration file to upload</label>
+                    <input type="file" id="configFile" name="config_file" accept=".txt,.conf,.cfg,.ios,.config,.log" title="Choose a Cisco configuration file to upload">
+                </div>
+                <p id="selectedFile"></p>
+                <button type="submit" class="btn btn-secondary" id="uploadBtn" disabled>Upload to INPUT Folder</button>
+            </form>
+        </div>
+
+        <!-- Action buttons -->
+        <div class="convert-section">
+            <!-- Gateway Type Selection -->
+            <div class="gateway-type-section">
+                <span class="gateway-type-label">Gateway Type:</span>
+                <div class="gateway-type-buttons">
+                    <input type="radio" id="gatewayBranch" name="gatewayType" value="branch">
+                    <label for="gatewayBranch" class="gateway-type-btn">Branch</label>
+                    <input type="radio" id="gatewayHub" name="gatewayType" value="hub">
+                    <label for="gatewayHub" class="gateway-type-btn">Hub</label>
+                </div>
+            </div>
+            <div class="action-buttons">
+                <button type="button" class="btn btn-secondary" id="displayBtn" disabled>Display Only</button>
+                <button type="button" class="btn btn-primary" id="convertBtn" disabled>Convert to Mist</button>
+            </div>
+        </div>
+        
+        <div id="result">
+            <div id="resultHeader" class="result-header"></div>
+            <div id="resultSections"></div>
+            <pre id="resultContent"></pre>
+        </div>
+        
+        <!-- Confirmation Dialog Modal -->
+        <div id="confirmModal" class="modal-overlay">
+            <div class="modal-content">
+                <h3>Confirm Conversion</h3>
+                <div id="confirmDetails"></div>
+                <div class="modal-buttons">
+                    <button type="button" class="btn btn-secondary" id="cancelConfirmBtn">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="applyConfirmBtn">Confirm & Apply</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="theme-badge">Theme: {{ theme }}</div>
+
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('configFile');
+        const selectedFile = document.getElementById('selectedFile');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const uploadForm = document.getElementById('uploadForm');
+        const displayBtn = document.getElementById('displayBtn');
+        const convertBtn = document.getElementById('convertBtn');
+        const fileSelect = document.getElementById('fileSelect');
+        const refreshBtn = document.getElementById('refreshBtn');
+        const result = document.getElementById('result');
+        const resultHeader = document.getElementById('resultHeader');
+        const resultSections = document.getElementById('resultSections');
+        const resultContent = document.getElementById('resultContent');
+        const gatewayBranch = document.getElementById('gatewayBranch');
+        const gatewayHub = document.getElementById('gatewayHub');
+
+        // Track current selection mode and gateway type
+        let currentMode = null; // 'select' or 'upload'
+        let gatewayType = null; // 'branch' or 'hub'
+
+        // Load available files and check Mist status on page load
+        loadFiles();
+        checkMistStatus();
+
+        // Check Mist cloud connection status
+        async function checkMistStatus() {
+            const statusDiv = document.getElementById('mistStatus');
+            const statusText = statusDiv.querySelector('.status-text');
+            
+            try {
+                const response = await fetch('/api/mist-status');
+                const data = await response.json();
+                
+                statusDiv.classList.remove('loading');
+                
+                if (data.connected) {
+                    statusDiv.classList.add('connected');
+                    statusDiv.classList.remove('disconnected');
+                    statusDiv.title = `Connected to ${data.org_name}`;
+                    statusText.textContent = data.org_name;
+                } else if (!data.api_configured) {
+                    statusDiv.classList.add('disconnected');
+                    statusDiv.classList.remove('connected');
+                    statusDiv.title = 'Mist API not configured';
+                    statusText.textContent = 'Not Configured';
+                } else {
+                    statusDiv.classList.add('disconnected');
+                    statusDiv.classList.remove('connected');
+                    statusDiv.title = data.error || 'Connection failed';
+                    statusText.textContent = 'Disconnected';
+                }
+            } catch (error) {
+                statusDiv.classList.remove('loading');
+                statusDiv.classList.add('disconnected');
+                statusDiv.title = 'Failed to check status';
+                statusText.textContent = 'Error';
+                console.error('Failed to check Mist status:', error);
+            }
+        }
+
+        async function loadFiles() {
+            try {
+                const response = await fetch('/api/files');
+                const data = await response.json();
+                
+                fileSelect.innerHTML = '<option value="">-- Select a config file --</option>';
+                data.files.forEach(file => {
+                    const option = document.createElement('option');
+                    option.value = file.name;
+                    option.textContent = `${file.name} (${formatSize(file.size)})`;
+                    fileSelect.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Failed to load files:', error);
+            }
+        }
+
+        function formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / 1048576).toFixed(1) + ' MB';
+        }
+
+        function updateButtons() {
+            const hasSelection = currentMode !== null;
+            const hasGatewayType = gatewayType !== null;
+            // Display button only needs a file selected
+            displayBtn.disabled = !hasSelection;
+            // Convert button needs both file and gateway type
+            convertBtn.disabled = !(hasSelection && hasGatewayType);
+        }
+
+        // Gateway type radio button handlers
+        gatewayBranch.addEventListener('change', () => {
+            if (gatewayBranch.checked) {
+                gatewayType = 'branch';
+                updateButtons();
+            }
+        });
+
+        gatewayHub.addEventListener('change', () => {
+            if (gatewayHub.checked) {
+                gatewayType = 'hub';
+                updateButtons();
+            }
+        });
+
+        // File select change handler
+        fileSelect.addEventListener('change', () => {
+            if (fileSelect.value) {
+                currentMode = 'select';
+                // Clear upload selection
+                fileInput.value = '';
+                selectedFile.textContent = '';
+                uploadBtn.disabled = true;
+            } else {
+                currentMode = null;
+            }
+            updateButtons();
+        });
+
+        // Refresh button
+        refreshBtn.addEventListener('click', loadFiles);
+
+        // Drag and drop handlers
+        dropZone.addEventListener('click', () => fileInput.click());
+        
+        dropZone.addEventListener('dragover', (event) => {
+            event.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+        
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+        
+        dropZone.addEventListener('drop', (event) => {
+            event.preventDefault();
+            dropZone.classList.remove('dragover');
+            if (event.dataTransfer.files.length) {
+                fileInput.files = event.dataTransfer.files;
+                updateFileDisplay();
+            }
+        });
+        
+        fileInput.addEventListener('change', updateFileDisplay);
+        
+        function updateFileDisplay() {
+            if (fileInput.files.length) {
+                selectedFile.innerHTML = 'Selected: <span class="filename">' + fileInput.files[0].name + '</span>';
+                uploadBtn.disabled = false;
+                currentMode = 'upload';
+                // Clear dropdown selection
+                fileSelect.value = '';
+            } else {
+                selectedFile.textContent = '';
+                uploadBtn.disabled = true;
+            }
+            updateButtons();
+        }
+
+        // Upload form handler - uploads to INPUT folder
+        uploadForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = 'Uploading...';
+            
+            const formData = new FormData(uploadForm);
+            
+            try {
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    showMessage(`Uploaded: ${data.filename} (${formatSize(data.size)})`, 'success');
+                    // Refresh file list and select the uploaded file
+                    await loadFiles();
+                    fileSelect.value = data.filename;
+                    currentMode = 'select';
+                    // Clear upload area
+                    fileInput.value = '';
+                    selectedFile.textContent = '';
+                    updateButtons();
+                } else {
+                    showMessage('Upload Error: ' + data.error, 'error');
+                }
+            } catch (error) {
+                showMessage('Upload Error: ' + error.message, 'error');
+            }
+            
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = 'Upload to INPUT Folder';
+        });
+
+        function showMessage(message, type) {
+            result.classList.add('show');
+            resultHeader.textContent = '';
+            resultSections.innerHTML = '';
+            resultContent.className = type;
+            resultContent.textContent = message;
+            resultContent.style.display = 'block';
+        }
+
+        function renderParsedData(data) {
+            result.classList.add('show');
+            resultContent.style.display = 'none';
+            
+            // Render header with summary
+            const summary = data.parsed_data.summary;
+            resultHeader.innerHTML = `
+                <h3>Parsed Configuration: ${data.filename}</h3>
+                <div class="summary-grid">
+                    <span class="summary-item">Lines: ${summary.total_lines}</span>
+                    <span class="summary-item">Interfaces: ${summary.interface_count}</span>
+                    <span class="summary-item">VLANs: ${summary.vlan_count}</span>
+                    <span class="summary-item">Routes: ${summary.route_count}</span>
+                    <span class="summary-item">ACLs: ${summary.acl_count}</span>
+                </div>
+            `;
+
+            // Render each section as collapsible
+            const sections = data.parsed_data;
+            resultSections.innerHTML = '';
+
+            // System Info
+            if (sections.system_info) {
+                addSection('System Info', sections.system_info);
+            }
+
+            // VRFs
+            if (sections.vrfs && sections.vrfs.length > 0) {
+                addSection('VRFs', sections.vrfs);
+            }
+
+            // AAA Configuration
+            if (sections.aaa) {
+                addSection('AAA Configuration', sections.aaa);
+            }
+
+            // Users
+            if (sections.users && sections.users.length > 0) {
+                addSection('User Accounts', sections.users);
+            }
+
+            // VLANs
+            if (sections.vlans && sections.vlans.length > 0) {
+                addSection('VLANs', sections.vlans);
+            }
+
+            // DHCP Pools
+            if (sections.dhcp_pools && sections.dhcp_pools.length > 0) {
+                addSection('DHCP Pools', sections.dhcp_pools);
+            }
+
+            // Interfaces
+            if (sections.interfaces && sections.interfaces.length > 0) {
+                addSection('Interfaces', sections.interfaces);
+            }
+
+            // Static Routes
+            if (sections.static_routes && sections.static_routes.length > 0) {
+                addSection('Static Routes', sections.static_routes);
+            }
+
+            // BGP
+            if (sections.bgp) {
+                addSection('BGP Configuration', sections.bgp);
+            }
+
+            // Class Maps
+            if (sections.class_maps && sections.class_maps.length > 0) {
+                addSection('Class Maps (QoS)', sections.class_maps);
+            }
+
+            // Policy Maps
+            if (sections.policy_maps && sections.policy_maps.length > 0) {
+                addSection('Policy Maps (QoS)', sections.policy_maps);
+            }
+
+            // Security Zones
+            if (sections.security_zones && sections.security_zones.length > 0) {
+                addSection('Security Zones', sections.security_zones);
+            }
+
+            // Zone Pairs
+            if (sections.zone_pairs && sections.zone_pairs.length > 0) {
+                addSection('Zone Pairs', sections.zone_pairs);
+            }
+
+            // Crypto Config
+            if (sections.crypto) {
+                addSection('Crypto / VPN Configuration', sections.crypto);
+            }
+
+            // NetFlow
+            if (sections.netflow) {
+                addSection('NetFlow Configuration', sections.netflow);
+            }
+
+            // SNMP
+            if (sections.snmp) {
+                addSection('SNMP Configuration', sections.snmp);
+            }
+
+            // Logging
+            if (sections.logging) {
+                addSection('Logging Configuration', sections.logging);
+            }
+
+            // NTP
+            if (sections.ntp) {
+                addSection('NTP Configuration', sections.ntp);
+            }
+
+            // Access Lists
+            if (sections.access_lists && sections.access_lists.length > 0) {
+                addSection('Access Lists', sections.access_lists);
+            }
+        }
+
+        function addSection(title, data) {
+            const section = document.createElement('details');
+            section.className = 'config-section';
+            
+            const summary = document.createElement('summary');
+            summary.textContent = title;
+            if (Array.isArray(data)) {
+                summary.textContent += ` (${data.length})`;
+            }
+            section.appendChild(summary);
+            
+            const content = document.createElement('pre');
+            content.className = 'section-content';
+            content.textContent = JSON.stringify(data, null, 2);
+            section.appendChild(content);
+            
+            resultSections.appendChild(section);
+        }
+
+        // Display button handler
+        displayBtn.addEventListener('click', async () => {
+            displayBtn.disabled = true;
+            displayBtn.textContent = 'Parsing...';
+            
+            const formData = new FormData();
+            
+            if (currentMode === 'select') {
+                formData.append('selected_file', fileSelect.value);
+            } else if (currentMode === 'upload') {
+                formData.append('config_file', fileInput.files[0]);
+            }
+            
+            try {
+                const response = await fetch('/api/display', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    renderParsedData(data);
+                } else {
+                    showMessage('Error: ' + data.error, 'error');
+                }
+            } catch (error) {
+                showMessage('Error: ' + error.message, 'error');
+            }
+            
+            displayBtn.disabled = false;
+            displayBtn.textContent = 'Display Only';
+        });
+
+        // Convert button handler - shows preview then confirmation dialog
+        let pendingProposal = null;  // Store proposal for apply step
+        
+        const confirmModal = document.getElementById('confirmModal');
+        const confirmDetails = document.getElementById('confirmDetails');
+        const cancelConfirmBtn = document.getElementById('cancelConfirmBtn');
+        const applyConfirmBtn = document.getElementById('applyConfirmBtn');
+        
+        convertBtn.addEventListener('click', async () => {
+            convertBtn.disabled = true;
+            convertBtn.textContent = 'Analyzing...';
+            
+            const formData = new FormData();
+            formData.append('gateway_type', gatewayType);
+            
+            if (currentMode === 'select') {
+                formData.append('selected_file', fileSelect.value);
+            } else if (currentMode === 'upload') {
+                formData.append('config_file', fileInput.files[0]);
+            }
+            
+            try {
+                const response = await fetch('/api/convert', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                
+                if (response.ok && data.status === 'preview') {
+                    // Store proposal and show confirmation dialog
+                    pendingProposal = data.proposed;
+                    showConfirmDialog(data.proposed);
+                } else {
+                    showMessage('Error: ' + (data.error || 'Unknown error'), 'error');
+                }
+            } catch (error) {
+                showMessage('Error: ' + error.message, 'error');
+            }
+            
+            convertBtn.disabled = false;
+            convertBtn.textContent = 'Convert to Mist';
+        });
+        
+        function showConfirmDialog(proposed) {
+            const siteStatus = proposed.site.exists 
+                ? `<span class="existing-site">Using existing site</span>` 
+                : `<span class="new-site">Will create new site</span>`;
+            
+            confirmDetails.innerHTML = `
+                <div class="confirm-section">
+                    <h4>Gateway Configuration</h4>
+                    <div class="confirm-row">
+                        <span class="confirm-label">Gateway Type:</span>
+                        <span class="confirm-value">${proposed.gateway_type.toUpperCase()}</span>
+                    </div>
+                    <div class="confirm-row">
+                        <span class="confirm-label">Device Name:</span>
+                        <span class="confirm-value">${proposed.device_name}</span>
+                    </div>
+                </div>
+                <div class="confirm-section">
+                    <h4>Site</h4>
+                    <div class="confirm-row">
+                        <span class="confirm-label">Status:</span>
+                        ${siteStatus}
+                    </div>
+                    <div class="confirm-row">
+                        <span class="confirm-label">Site Name:</span>
+                        <span class="confirm-value">${proposed.site.name}</span>
+                    </div>
+                    ${proposed.site.address ? `
+                    <div class="confirm-row">
+                        <span class="confirm-label">Location:</span>
+                        <span class="confirm-value">${proposed.site.address}</span>
+                    </div>` : ''}
+                </div>
+                <div class="confirm-section">
+                    <h4>Configuration Summary</h4>
+                    <div class="confirm-row">
+                        <span class="confirm-label">Interfaces:</span>
+                        <span class="confirm-value">${proposed.config_summary.interfaces}</span>
+                    </div>
+                    <div class="confirm-row">
+                        <span class="confirm-label">Static Routes:</span>
+                        <span class="confirm-value">${proposed.config_summary.static_routes}</span>
+                    </div>
+                    <div class="confirm-row">
+                        <span class="confirm-label">NTP Servers:</span>
+                        <span class="confirm-value">${proposed.config_summary.ntp_servers}</span>
+                    </div>
+                    <div class="confirm-row">
+                        <span class="confirm-label">Syslog Hosts:</span>
+                        <span class="confirm-value">${proposed.config_summary.logging_hosts}</span>
+                    </div>
+                </div>
+            `;
+            
+            confirmModal.style.display = 'flex';
+        }
+        
+        cancelConfirmBtn.addEventListener('click', () => {
+            confirmModal.style.display = 'none';
+            pendingProposal = null;
+        });
+        
+        applyConfirmBtn.addEventListener('click', async () => {
+            if (!pendingProposal) return;
+            
+            applyConfirmBtn.disabled = true;
+            applyConfirmBtn.textContent = 'Applying...';
+            
+            const applyData = {
+                device_name: pendingProposal.device_name,
+                gateway_type: pendingProposal.gateway_type,
+                site_name: pendingProposal.site.name,
+                site_address: pendingProposal.site.address || '',
+                create_site: !pendingProposal.site.exists,
+                site_id: pendingProposal.site.site_id
+            };
+            
+            try {
+                const response = await fetch('/api/apply', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(applyData)
+                });
+                const data = await response.json();
+                
+                confirmModal.style.display = 'none';
+                pendingProposal = null;
+                
+                if (response.ok) {
+                    showMessage(`Success! ${data.message}\n\nSite ID: ${data.site_id}`, 'success');
+                } else {
+                    showMessage('Error: ' + (data.error || 'Unknown error'), 'error');
+                }
+            } catch (error) {
+                showMessage('Error: ' + error.message, 'error');
+            }
+            
+            applyConfirmBtn.disabled = false;
+            applyConfirmBtn.textContent = 'Confirm & Apply';
+        });
+    </script>
+</body>
+</html>
