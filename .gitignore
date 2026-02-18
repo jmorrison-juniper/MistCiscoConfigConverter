@@ -63,3 +63,7 @@ output/*
 # OS
 .DS_Store
 Thumbs.db
+
+# Large documentation files
+documentation/mist-api-openapi*.json
+documentation/mist-api-openapi*.yaml
