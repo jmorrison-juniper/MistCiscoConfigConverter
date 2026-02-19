@@ -59,6 +59,8 @@
                     <label for="gatewayBranch" class="gateway-type-btn">Branch</label>
                     <input type="radio" id="gatewayHub" name="gatewayType" value="hub">
                     <label for="gatewayHub" class="gateway-type-btn">Hub</label>
+                    <input type="radio" id="gatewayStandalone" name="gatewayType" value="standalone">
+                    <label for="gatewayStandalone" class="gateway-type-btn">Standalone</label>
                 </div>
             </div>
             <div class="action-buttons">
@@ -104,10 +106,11 @@
         const resultContent = document.getElementById('resultContent');
         const gatewayBranch = document.getElementById('gatewayBranch');
         const gatewayHub = document.getElementById('gatewayHub');
+        const gatewayStandalone = document.getElementById('gatewayStandalone');
 
         // Track current selection mode and gateway type
         let currentMode = null; // 'select' or 'upload'
-        let gatewayType = null; // 'branch' or 'hub'
+        let gatewayType = null; // 'branch', 'hub', or 'standalone'
 
         // Load available files and check Mist status on page load
         loadFiles();
@@ -192,6 +195,13 @@
         gatewayHub.addEventListener('change', () => {
             if (gatewayHub.checked) {
                 gatewayType = 'hub';
+                updateButtons();
+            }
+        });
+
+        gatewayStandalone.addEventListener('change', () => {
+            if (gatewayStandalone.checked) {
+                gatewayType = 'standalone';
                 updateButtons();
             }
         });
@@ -512,18 +522,11 @@
                 ? `<span class="existing-site">Using existing site</span>` 
                 : `<span class="new-site">Will create new site</span>`;
             
-            confirmDetails.innerHTML = `
-                <div class="confirm-section">
-                    <h4>Gateway Configuration</h4>
-                    <div class="confirm-row">
-                        <span class="confirm-label">Gateway Type:</span>
-                        <span class="confirm-value">${proposed.gateway_type.toUpperCase()}</span>
-                    </div>
-                    <div class="confirm-row">
-                        <span class="confirm-label">Device Name:</span>
-                        <span class="confirm-value">${proposed.device_name}</span>
-                    </div>
-                </div>
+            const addr = proposed.site.address || {};
+            const hasAddress = addr.street || addr.city || addr.state;
+            
+            // Base confirmation content
+            let confirmHtml = `
                 <div class="confirm-section">
                     <h4>Site</h4>
                     <div class="confirm-row">
@@ -534,34 +537,427 @@
                         <span class="confirm-label">Site Name:</span>
                         <span class="confirm-value">${proposed.site.name}</span>
                     </div>
-                    ${proposed.site.address ? `
-                    <div class="confirm-row">
-                        <span class="confirm-label">Location:</span>
-                        <span class="confirm-value">${proposed.site.address}</span>
-                    </div>` : ''}
                 </div>
+                ${hasAddress ? `
                 <div class="confirm-section">
-                    <h4>Configuration Summary</h4>
+                    <h4>Address Details</h4>
+                    ${addr.street ? `
                     <div class="confirm-row">
-                        <span class="confirm-label">Interfaces:</span>
-                        <span class="confirm-value">${proposed.config_summary.interfaces}</span>
-                    </div>
+                        <span class="confirm-label">Street:</span>
+                        <span class="confirm-value">${addr.street}</span>
+                    </div>` : ''}
+                    ${addr.city ? `
                     <div class="confirm-row">
-                        <span class="confirm-label">Static Routes:</span>
-                        <span class="confirm-value">${proposed.config_summary.static_routes}</span>
-                    </div>
+                        <span class="confirm-label">City:</span>
+                        <span class="confirm-value">${addr.city}</span>
+                    </div>` : ''}
+                    ${addr.state ? `
                     <div class="confirm-row">
-                        <span class="confirm-label">NTP Servers:</span>
-                        <span class="confirm-value">${proposed.config_summary.ntp_servers}</span>
-                    </div>
+                        <span class="confirm-label">State:</span>
+                        <span class="confirm-value">${addr.state}</span>
+                    </div>` : ''}
+                    ${addr.zip_code ? `
                     <div class="confirm-row">
-                        <span class="confirm-label">Syslog Hosts:</span>
-                        <span class="confirm-value">${proposed.config_summary.logging_hosts}</span>
+                        <span class="confirm-label">ZIP Code:</span>
+                        <span class="confirm-value">${addr.zip_code}</span>
+                    </div>` : ''}
+                    ${addr.country_code ? `
+                    <div class="confirm-row">
+                        <span class="confirm-label">Country:</span>
+                        <span class="confirm-value">${addr.country_code}</span>
+                    </div>` : ''}
+                    ${addr.timezone ? `
+                    <div class="confirm-row">
+                        <span class="confirm-label">Timezone:</span>
+                        <span class="confirm-value">${addr.timezone}</span>
+                    </div>` : ''}
+                    ${addr.room_info ? `
+                    <div class="confirm-row">
+                        <span class="confirm-label">Room/Location:</span>
+                        <span class="confirm-value">${addr.room_info}</span>
+                    </div>` : ''}
+                    ${addr.contact ? `
+                    <div class="confirm-row">
+                        <span class="confirm-label">Contact:</span>
+                        <span class="confirm-value">${addr.contact}</span>
+                    </div>` : ''}
+                </div>` : ''}
+            `;
+            
+            // For hub, branch, or standalone mode, add gateway selection placeholder
+            // This allows assigning unassigned devices to new or empty sites
+            if (proposed.gateway_type === 'hub' || proposed.gateway_type === 'branch' || proposed.gateway_type === 'standalone') {
+                const gatewayTypeLabel = proposed.gateway_type === 'hub' ? 'Hub' : 
+                                         proposed.gateway_type === 'branch' ? 'Branch' : 'Standalone';
+                confirmHtml += `
+                <div class="confirm-section" id="gatewaySelectionSection">
+                    <h4>${gatewayTypeLabel} Gateway Device Selection</h4>
+                    <div id="gatewaySelectionContent">
+                        <span class="loading">Loading gateway devices...</span>
                     </div>
+                </div>
+                `;
+                
+                // Add template/profile comparison section
+                const templateInfo = proposed.template_info;
+                const comparison = proposed.template_comparison;
+                
+                if (templateInfo) {
+                    const templateLabel = proposed.gateway_type === 'hub' ? 'Device Profile' : 'Gateway Template';
+                    const templateStatus = templateInfo.exists 
+                        ? `<span class="existing-site">Using existing ${templateLabel.toLowerCase()}</span>`
+                        : `<span class="new-site">Will create new ${templateLabel.toLowerCase()}</span>`;
+                    
+                    confirmHtml += `
+                    <div class="confirm-section">
+                        <h4>${templateLabel}: ${templateInfo.name}</h4>
+                        <div class="confirm-row">
+                            <span class="confirm-label">Status:</span>
+                            ${templateStatus}
+                        </div>
+                    `;
+                    
+                    // Show comparison and override options if template exists and has differences
+                    if (templateInfo.exists && comparison) {
+                        // Check for actual differences (not just auto-update cases)
+                        const hasNtpDiff = !comparison.ntp.match && !comparison.ntp.will_update_template;
+                        const hasDnsDiff = !comparison.dns.match && !comparison.dns.will_update_template;
+                        const hasSyslogDiff = !comparison.syslog.match && !comparison.syslog.will_update_template;
+                        const hasAnyDifference = hasNtpDiff || hasDnsDiff || hasSyslogDiff;
+                        
+                        // Check for auto-update cases (template empty, Cisco has values)
+                        const hasNtpUpdate = comparison.ntp.will_update_template;
+                        const hasDnsUpdate = comparison.dns.will_update_template;
+                        const hasSyslogUpdate = comparison.syslog.will_update_template;
+                        const hasAnyUpdate = hasNtpUpdate || hasDnsUpdate || hasSyslogUpdate;
+                        
+                        // Show auto-update message if template will be populated
+                        if (hasAnyUpdate) {
+                            confirmHtml += `
+                            <div class="config-comparison">
+                                <p class="success-message">The ${templateLabel.toLowerCase()} will be updated with Cisco config values:</p>
+                            `;
+                            
+                            if (hasNtpUpdate) {
+                                const ciscoNtp = comparison.ntp.cisco.join(', ');
+                                confirmHtml += `
+                                <div class="comparison-item update-item">
+                                    <div class="comparison-details">
+                                        <span class="detail-row"><strong>NTP:</strong> ${ciscoNtp}</span>
+                                    </div>
+                                </div>
+                                `;
+                            }
+                            
+                            if (hasDnsUpdate) {
+                                const ciscoDns = comparison.dns.cisco.join(', ');
+                                confirmHtml += `
+                                <div class="comparison-item update-item">
+                                    <div class="comparison-details">
+                                        <span class="detail-row"><strong>DNS:</strong> ${ciscoDns}</span>
+                                    </div>
+                                </div>
+                                `;
+                            }
+                            
+                            if (hasSyslogUpdate) {
+                                const ciscoSyslog = comparison.syslog.cisco.join(', ');
+                                confirmHtml += `
+                                <div class="comparison-item update-item">
+                                    <div class="comparison-details">
+                                        <span class="detail-row"><strong>Syslog:</strong> ${ciscoSyslog}</span>
+                                    </div>
+                                </div>
+                                `;
+                            }
+                            
+                            confirmHtml += `</div>`; // close config-comparison
+                        }
+                        
+                        if (hasAnyDifference) {
+                            confirmHtml += `
+                            <div class="config-comparison">
+                                <p class="info-message">The ${templateLabel.toLowerCase()} has different NTP/DNS/Syslog settings than the Cisco config. Select which values to override at the device/site level:</p>
+                            `;
+                            
+                            // NTP comparison
+                            if (hasNtpDiff) {
+                                const ciscoNtp = comparison.ntp.cisco.length > 0 ? comparison.ntp.cisco.join(', ') : '(none)';
+                                const templateNtp = comparison.ntp.template.length > 0 ? comparison.ntp.template.join(', ') : '(none)';
+                                const ntpChecked = comparison.ntp.template.length === 0 ? 'checked' : '';
+                                confirmHtml += `
+                                <div class="comparison-item">
+                                    <label class="checkbox-container">
+                                        <input type="checkbox" id="override_ntp" name="override_ntp" value="true" ${ntpChecked}>
+                                        <span class="checkbox-label">Override NTP servers</span>
+                                    </label>
+                                    <div class="comparison-details">
+                                        <span class="detail-row"><strong>Template:</strong> ${templateNtp}</span>
+                                        <span class="detail-row"><strong>Cisco:</strong> ${ciscoNtp}</span>
+                                    </div>
+                                </div>
+                                `;
+                            }
+                            
+                            // DNS comparison
+                            if (hasDnsDiff) {
+                                const ciscoDns = comparison.dns.cisco.length > 0 ? comparison.dns.cisco.join(', ') : '(none)';
+                                const templateDns = comparison.dns.template.length > 0 ? comparison.dns.template.join(', ') : '(none)';
+                                const dnsChecked = comparison.dns.template.length === 0 ? 'checked' : '';
+                                confirmHtml += `
+                                <div class="comparison-item">
+                                    <label class="checkbox-container">
+                                        <input type="checkbox" id="override_dns" name="override_dns" value="true" ${dnsChecked}>
+                                        <span class="checkbox-label">Override DNS servers</span>
+                                    </label>
+                                    <div class="comparison-details">
+                                        <span class="detail-row"><strong>Template:</strong> ${templateDns}</span>
+                                        <span class="detail-row"><strong>Cisco:</strong> ${ciscoDns}</span>
+                                    </div>
+                                </div>
+                                `;
+                            }
+                            
+                            // Syslog comparison
+                            if (hasSyslogDiff) {
+                                const ciscoSyslog = comparison.syslog.cisco.length > 0 ? comparison.syslog.cisco.join(', ') : '(none)';
+                                const templateSyslog = comparison.syslog.template.length > 0 ? comparison.syslog.template.join(', ') : '(none)';
+                                const syslogChecked = comparison.syslog.template.length === 0 ? 'checked' : '';
+                                confirmHtml += `
+                                <div class="comparison-item">
+                                    <label class="checkbox-container">
+                                        <input type="checkbox" id="override_syslog" name="override_syslog" value="true" ${syslogChecked}>
+                                        <span class="checkbox-label">Override Syslog servers</span>
+                                    </label>
+                                    <div class="comparison-details">
+                                        <span class="detail-row"><strong>Template:</strong> ${templateSyslog}</span>
+                                        <span class="detail-row"><strong>Cisco:</strong> ${ciscoSyslog}</span>
+                                    </div>
+                                </div>
+                                `;
+                            }
+                            
+                            confirmHtml += `</div>`; // close config-comparison
+                        } else if (!hasAnyUpdate) {
+                            confirmHtml += `
+                            <div class="confirm-row">
+                                <span class="success-message">NTP, DNS, and Syslog settings match the Cisco config.</span>
+                            </div>
+                            `;
+                        }
+                    } else if (!templateInfo.exists) {
+                        // Template will be created with Cisco config values
+                        // NTP servers may be objects with "server" key or strings
+                        const rawNtp = proposed.parsed_data?.ntp?.servers || [];
+                        const ntp = rawNtp.map(s => typeof s === 'object' ? s.server || '' : s).filter(s => s);
+                        const syslog = proposed.parsed_data?.logging?.hosts || [];
+                        const dns = proposed.parsed_data?.dns?.servers || [];
+                        if (ntp.length > 0 || syslog.length > 0 || dns.length > 0) {
+                            confirmHtml += `
+                            <div class="confirm-row">
+                                <span class="info-message">New ${templateLabel.toLowerCase()} will be created with Cisco config values:</span>
+                            </div>
+                            `;
+                            if (ntp.length > 0) {
+                                confirmHtml += `
+                                <div class="confirm-row">
+                                    <span class="confirm-label">NTP:</span>
+                                    <span class="confirm-value">${ntp.join(', ')}</span>
+                                </div>
+                                `;
+                            }
+                            if (dns.length > 0) {
+                                confirmHtml += `
+                                <div class="confirm-row">
+                                    <span class="confirm-label">DNS:</span>
+                                    <span class="confirm-value">${dns.join(', ')}</span>
+                                </div>
+                                `;
+                            }
+                            if (syslog.length > 0) {
+                                confirmHtml += `
+                                <div class="confirm-row">
+                                    <span class="confirm-label">Syslog:</span>
+                                    <span class="confirm-value">${syslog.join(', ')}</span>
+                                </div>
+                                `;
+                            }
+                        }
+                    }
+                    
+                    confirmHtml += `</div>`; // close confirm-section
+                }
+            }
+            
+            confirmDetails.innerHTML = confirmHtml;
+            confirmModal.style.display = 'flex';
+            
+            // For hub, branch, or standalone mode, check for existing gateways or offer unassigned inventory
+            if (proposed.gateway_type === 'hub' || proposed.gateway_type === 'branch' || proposed.gateway_type === 'standalone') {
+                if (proposed.site.exists && proposed.site.site_id) {
+                    // Existing site - check if it has gateways
+                    fetchSiteGateways(proposed.site.site_id, proposed.gateway_type);
+                } else {
+                    // New site - only option is unassigned inventory
+                    fetchUnassignedGatewaysForNewSite(proposed.gateway_type);
+                }
+            }
+        }
+        
+        // Fetch gateway devices for hub/branch mode selection
+        async function fetchSiteGateways(siteId, gatewayType) {
+            const contentDiv = document.getElementById('gatewaySelectionContent');
+            
+            try {
+                const response = await fetch(`/api/site-gateways/${siteId}`);
+                const data = await response.json();
+                
+                if (data.gateway_count === 0) {
+                    // No gateways at site - fetch unassigned gateways from org inventory
+                    contentDiv.innerHTML = `
+                        <p class="info-message">No gateway devices currently assigned to this site.</p>
+                        <p>Loading unassigned devices from inventory...</p>
+                    `;
+                    await fetchUnassignedGateways(siteId, gatewayType);
+                } else {
+                    // Site has gateways - show them with appropriate messaging
+                    const typeLabel = gatewayType === 'hub' ? 'hub profile' : 
+                                      gatewayType === 'branch' ? 'branch template' : 'standalone config';
+                    contentDiv.innerHTML = `<p>Site has ${data.gateway_count} gateway(s). These will use the ${typeLabel}.</p>`;
+                    renderGatewaySelection(data.gateways, false, gatewayType);
+                }
+            } catch (error) {
+                contentDiv.innerHTML = `<p class="error-message">Failed to load gateways: ${error.message}</p>`;
+            }
+        }
+        
+        // Fetch unassigned gateway devices from org inventory (for existing site with no gateways)
+        async function fetchUnassignedGateways(targetSiteId, gatewayType) {
+            const contentDiv = document.getElementById('gatewaySelectionContent');
+            const typeLabel = gatewayType === 'hub' ? 'hub profile' : 
+                              gatewayType === 'branch' ? 'branch template' : 'standalone config';
+            
+            try {
+                const response = await fetch('/api/unassigned-gateways');
+                const data = await response.json();
+                
+                if (data.gateway_count === 0) {
+                    contentDiv.innerHTML = `
+                        <p class="info-message">No gateway devices found at this site or in unassigned inventory.</p>
+                        <p>The ${typeLabel} will be configured but no devices will be assigned.</p>
+                        <p>You can manually claim/assign gateway devices to this site later.</p>
+                    `;
+                } else {
+                    let html = `
+                        <p class="info-message">No gateways assigned to this site yet.</p>
+                        <p><strong>Select gateway(s) from unassigned inventory to assign to this site:</strong></p>
+                    `;
+                    contentDiv.innerHTML = html;
+                    renderGatewaySelection(data.gateways, true, gatewayType);
+                }
+            } catch (error) {
+                contentDiv.innerHTML = `<p class="error-message">Failed to load unassigned gateways: ${error.message}</p>`;
+            }
+        }
+        
+        // Fetch unassigned gateways for a new site (site doesn't exist yet)
+        async function fetchUnassignedGatewaysForNewSite(gatewayType) {
+            const contentDiv = document.getElementById('gatewaySelectionContent');
+            const typeLabel = gatewayType === 'hub' ? 'hub profile' : 
+                              gatewayType === 'branch' ? 'branch template' : 'standalone config';
+            
+            try {
+                const response = await fetch('/api/unassigned-gateways');
+                const data = await response.json();
+                
+                if (data.gateway_count === 0) {
+                    contentDiv.innerHTML = `
+                        <p class="info-message">No unassigned gateway devices in inventory.</p>
+                        <p>The site will be created with the ${typeLabel} but no devices will be assigned.</p>
+                        <p>You can manually claim/assign gateway devices to this site later.</p>
+                    `;
+                } else {
+                    let html = `
+                        <p class="info-message">New site will be created.</p>
+                        <p><strong>Optionally select gateway(s) from inventory to assign to this site:</strong></p>
+                    `;
+                    contentDiv.innerHTML = html;
+                    renderGatewaySelection(data.gateways, true, gatewayType);
+                }
+            } catch (error) {
+                contentDiv.innerHTML = `<p class="error-message">Failed to load gateways: ${error.message}</p>`;
+            }
+        }
+        
+        // Render gateway selection checkboxes
+        function renderGatewaySelection(gateways, fromUnassigned, gatewayType) {
+            const contentDiv = document.getElementById('gatewaySelectionContent');
+            const typeLabel = gatewayType === 'hub' ? 'hub profile' : 
+                              gatewayType === 'branch' ? 'branch template' : 'standalone config';
+            
+            // Auto-select if single device already at site (not from unassigned inventory)
+            const autoSelectSingle = (!fromUnassigned && gateways.length === 1);
+            
+            let gatewayHtml = contentDiv.innerHTML;
+            gatewayHtml += `
+                <input type="hidden" id="assignToSite" value="${fromUnassigned}">
+                <p>${fromUnassigned ? 'Select 1 or 2 devices (2 for HA cluster):' : `Gateway device(s) using the ${typeLabel}:`}</p>
+                <div class="gateway-list">
+            `;
+            
+            gateways.forEach((gw, index) => {
+                const displayName = gw.name || 'Unnamed';
+                const haStatus = gw.ha_state ? ` (HA: ${gw.ha_state})` : '';
+                const isChecked = autoSelectSingle ? 'checked' : '';
+                gatewayHtml += `
+                    <label class="gateway-checkbox">
+                        <input type="checkbox" name="hubGateway" value="${gw.mac}" ${isChecked}
+                               data-name="${displayName}" onchange="updateHaOption()">
+                        <span class="gateway-info">
+                            <strong>${displayName}</strong>${haStatus}
+                            <br><small>MAC: ${gw.mac} | Model: ${gw.model}${gw.serial ? ' | S/N: ' + gw.serial : ''}</small>
+                        </span>
+                    </label>
+                `;
+            });
+            
+            gatewayHtml += `</div>`;
+            
+            // Note about auto-selection when single device at site
+            if (autoSelectSingle) {
+                gatewayHtml += `
+                    <p style="margin-top: 8px; font-size: 0.85em; color: var(--color-text-secondary);">
+                        <em>Single gateway auto-selected. Uncheck to skip ${typeLabel} assignment.</em>
+                    </p>
+                `;
+            }
+            
+            // HA option (hidden until 2 devices selected)
+            gatewayHtml += `
+                <div id="haOption" style="display: none; margin-top: 10px; padding: 10px; background: var(--color-bg-secondary); border-radius: 4px;">
+                    <label class="gateway-checkbox">
+                        <input type="checkbox" id="configureHa" name="configureHa">
+                        <span><strong>Configure as HA Cluster</strong><br>
+                        <small>Create a high-availability pair from the selected gateways</small></span>
+                    </label>
                 </div>
             `;
             
-            confirmModal.style.display = 'flex';
+            contentDiv.innerHTML = gatewayHtml;
+        }
+        
+        // Show/hide HA option based on number of selected gateways
+        function updateHaOption() {
+            const checkboxes = document.querySelectorAll('input[name="hubGateway"]:checked');
+            const haOption = document.getElementById('haOption');
+            const haCheckbox = document.getElementById('configureHa');
+            
+            if (checkboxes.length === 2) {
+                haOption.style.display = 'block';
+            } else {
+                haOption.style.display = 'none';
+                if (haCheckbox) haCheckbox.checked = false;
+            }
         }
         
         cancelConfirmBtn.addEventListener('click', () => {
@@ -575,13 +971,45 @@
             applyConfirmBtn.disabled = true;
             applyConfirmBtn.textContent = 'Applying...';
             
+            // Collect selected gateway devices for hub, branch, or standalone mode
+            let selectedDevices = [];
+            let configureHa = false;
+            let assignToSite = false;
+            
+            if (pendingProposal.gateway_type === 'hub' || pendingProposal.gateway_type === 'branch' || pendingProposal.gateway_type === 'standalone') {
+                const checkboxes = document.querySelectorAll('input[name="hubGateway"]:checked');
+                selectedDevices = Array.from(checkboxes).map(cb => cb.value);
+                
+                const haCheckbox = document.getElementById('configureHa');
+                configureHa = haCheckbox ? haCheckbox.checked : false;
+                
+                const assignToSiteInput = document.getElementById('assignToSite');
+                assignToSite = assignToSiteInput ? assignToSiteInput.value === 'true' : false;
+            }
+            
+            // Collect override checkboxes for NTP/DNS/Syslog
+            const overrideNtpCheckbox = document.getElementById('override_ntp');
+            const overrideDnsCheckbox = document.getElementById('override_dns');
+            const overrideSyslogCheckbox = document.getElementById('override_syslog');
+            
+            const overrideNtp = overrideNtpCheckbox ? overrideNtpCheckbox.checked : false;
+            const overrideDns = overrideDnsCheckbox ? overrideDnsCheckbox.checked : false;
+            const overrideSyslog = overrideSyslogCheckbox ? overrideSyslogCheckbox.checked : false;
+            
             const applyData = {
                 device_name: pendingProposal.device_name,
                 gateway_type: pendingProposal.gateway_type,
                 site_name: pendingProposal.site.name,
-                site_address: pendingProposal.site.address || '',
+                address: pendingProposal.site.address || {},
                 create_site: !pendingProposal.site.exists,
-                site_id: pendingProposal.site.site_id
+                site_id: pendingProposal.site.site_id,
+                selected_devices: selectedDevices,
+                configure_ha: configureHa,
+                assign_to_site: assignToSite,
+                parsed_data: pendingProposal.parsed_data || {},
+                override_ntp: overrideNtp,
+                override_dns: overrideDns,
+                override_syslog: overrideSyslog
             };
             
             try {

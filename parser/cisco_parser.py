@@ -202,6 +202,14 @@ class NTPConfig:
 
 
 @dataclass
+class DNSConfig:
+    """DNS/Name server configuration."""
+    servers: list = field(default_factory=list)
+    domain_name: str = ""
+    domain_lookup: bool = True
+
+
+@dataclass
 class AccessList:
     """Access list configuration."""
     name: str = ""
@@ -242,6 +250,7 @@ class CiscoConfigParser:
         self.snmp = SNMPConfig()
         self.logging_config = LoggingConfig()
         self.ntp = NTPConfig()
+        self.dns = DNSConfig()
         self.access_lists: list[AccessList] = []
         
         # Parsing state
@@ -274,6 +283,7 @@ class CiscoConfigParser:
             self._parse_logging()
             self._parse_snmp()
             self._parse_ntp()
+            self._parse_dns()
             self._parse_access_lists()
         except Exception as error:
             logger.error(f"Parse error: {error}")
@@ -855,6 +865,39 @@ class CiscoConfigParser:
             elif stripped.startswith("ntp source "):
                 self.ntp.source_interface = stripped.split("ntp source ", 1)[1]
 
+    def _parse_dns(self):
+        """Extract DNS/name-server configuration."""
+        for line in self.lines:
+            stripped = line.strip()
+            
+            # Global DNS servers: ip name-server [vrf name] x.x.x.x [y.y.y.y ...]
+            if stripped.startswith("ip name-server "):
+                parts = stripped.split()
+                # Skip "ip" and "name-server"
+                remaining = parts[2:]
+                
+                # Check if VRF is specified
+                if remaining and remaining[0] == "vrf" and len(remaining) >= 2:
+                    # Skip "vrf" and vrf-name, rest are servers
+                    remaining = remaining[2:]
+                
+                # All remaining parts should be DNS server IPs
+                for server in remaining:
+                    # Basic IP validation (contains dots)
+                    if "." in server:
+                        self.dns.servers.append(server)
+            
+            # Domain name: ip domain name example.com
+            elif stripped.startswith("ip domain name ") or stripped.startswith("ip domain-name "):
+                if "ip domain name " in stripped:
+                    self.dns.domain_name = stripped.split("ip domain name ", 1)[1].strip()
+                else:
+                    self.dns.domain_name = stripped.split("ip domain-name ", 1)[1].strip()
+            
+            # Domain lookup disabled
+            elif stripped == "no ip domain lookup" or stripped == "no ip domain-lookup":
+                self.dns.domain_lookup = False
+
     def _parse_access_lists(self):
         """Extract access list configurations."""
         # Standard and extended numbered ACLs
@@ -1019,6 +1062,11 @@ class CiscoConfigParser:
             "ntp": {
                 "servers": self.ntp.servers,
                 "source_interface": self.ntp.source_interface
+            },
+            "dns": {
+                "servers": self.dns.servers,
+                "domain_name": self.dns.domain_name,
+                "domain_lookup": self.dns.domain_lookup
             },
             "access_lists": [
                 {

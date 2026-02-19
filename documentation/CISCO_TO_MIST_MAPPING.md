@@ -13,6 +13,47 @@ This document tracks terminology conversions and configuration mappings between 
 | Wireless Controller | N/A | Mist is controller-less; APs connect directly to cloud |
 | Access Point | AP | Direct cloud-managed |
 
+## Mist Template Types
+
+Understanding the different template/profile types in Mist and when to use each:
+
+| Template Type | API Endpoint | Purpose | Attached To |
+| ------------- | ------------ | ------- | ----------- |
+| Site Template | `/orgs/{org}/sitetemplates` | AP configuration (RF, WLAN) | Site (`sitetemplate_id`) |
+| Gateway Template | `/orgs/{org}/gatewaytemplates` | Gateway (router/firewall) config | Site (`gatewaytemplate_id`) |
+| Device Profile | `/orgs/{org}/deviceprofiles?type=gateway` | Hub gateway device config | Device (not site) |
+| Network Template | `/orgs/{org}/networktemplates` | Switch/network config | Site (`networktemplate_id`) |
+
+### Gateway Template Types
+
+Gateway templates have a `type` field that determines their role:
+
+| Type | Use Case | Description |
+| ---- | -------- | ----------- |
+| `spoke` | Branch sites | Standard branch gateway, typically connects to hub |
+| `standalone` | Standalone sites | Independent gateway, no hub dependency |
+
+**Example**: Branch sites use a Gateway Template with `type: "spoke"` named "Branch-Default-Template"
+
+### Device Profiles for Hub Gateways
+
+Hub gateways do NOT use Gateway Templates. Instead, they use **Device Profiles** with `type: "gateway"`:
+
+- API: `GET/POST /api/v1/orgs/{org_id}/deviceprofiles?type=gateway`
+- Naming convention: `{device_name}-Hub-Template`
+- Attached at device level, not site level
+- Contains hub-specific configuration (BGP hub settings, tunnel concentrator, etc.)
+
+### Important Distinction
+
+| Gateway Role | Template/Profile Type | Site Attachment |
+| ------------ | --------------------- | --------------- |
+| Branch | Gateway Template (`type: "spoke"`) | YES - `gatewaytemplate_id` on site |
+| Hub | Device Profile (`type: "gateway"`) | NO - device-level profile |
+| Standalone | Gateway Template (`type: "standalone"`) | YES - `gatewaytemplate_id` on site |
+
+**Do NOT use Site Templates for gateways** - Site Templates are exclusively for AP configuration.
+
 ## Configuration Hierarchy
 
 Understanding where settings can be applied in Mist:
