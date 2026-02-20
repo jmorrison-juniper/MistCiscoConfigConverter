@@ -347,6 +347,111 @@ input[type="file"] {
     background: var(--color-text-secondary);
 }
 
+/* Danger button for destructive actions */
+.btn-danger {
+    background: #CC0000;
+    color: #FFFFFF;
+}
+
+.btn-danger:hover {
+    background: #AA0000;
+}
+
+/* Warning button for significant but recoverable actions */
+.btn-warning {
+    background: #CC8800;
+    color: #FFFFFF;
+}
+
+.btn-warning:hover {
+    background: #AA7700;
+}
+
+/* Small button variant */
+.btn-small {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.75rem;
+}
+
+/* ============================================
+   POWER USER CONTROLS
+   Destructive operations - development/testing
+   ============================================ */
+.poweruser-controls {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: linear-gradient(135deg, #660000 0%, #990000 100%);
+    padding: 0.5rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    z-index: 1000;
+    border-bottom: 2px solid #FF0000;
+    box-shadow: 0 2px 10px rgba(255, 0, 0, 0.3);
+}
+
+.poweruser-label {
+    color: #FFCC00;
+    font-weight: bold;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.poweruser-controls .btn-danger {
+    background: #AA0000;
+    border: 1px solid #FF0000;
+}
+
+.poweruser-controls .btn-danger:hover {
+    background: #CC0000;
+    box-shadow: 0 0 10px rgba(255, 0, 0, 0.5);
+}
+
+.poweruser-controls .btn-warning {
+    background: #AA7700;
+    border: 1px solid #FFAA00;
+}
+
+.poweruser-controls .btn-warning:hover {
+    background: #CC8800;
+    box-shadow: 0 0 10px rgba(255, 170, 0, 0.5);
+}
+
+.poweruser-controls .restore-select {
+    padding: 0.3rem 0.5rem;
+    font-size: 0.8rem;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    border: 1px solid #555;
+    border-radius: 4px;
+    cursor: pointer;
+    max-width: 200px;
+}
+
+.poweruser-controls .restore-select:focus {
+    outline: none;
+    border-color: #FFAA00;
+}
+
+.poweruser-controls .poweruser-separator {
+    color: #555;
+    margin: 0 0.25rem;
+    font-weight: bold;
+}
+
+/* Adjust body padding when poweruser controls are visible */
+body:has(.poweruser-controls) {
+    padding-top: 3rem;
+}
+
+/* Adjust mist-status position when poweruser bar is present */
+body:has(.poweruser-controls) .mist-status {
+    top: 3.5rem;
+}
+
 /* ============================================
    INPUT SECTIONS
    ============================================ */
@@ -580,6 +685,11 @@ input[type="file"] {
 .confirm-value {
     color: var(--color-text-primary);
     font-weight: 500;
+}
+
+.confirm-value.monospace {
+    font-family: var(--font-mono);
+    color: var(--color-primary-light);
 }
 
 .existing-site {
@@ -840,6 +950,34 @@ input[type="file"] {
 .success-message {
     color: var(--color-success);
     font-size: 0.875rem;
+}
+
+/* Comparison item status variants */
+.comparison-item.update-item {
+    border-left: 3px solid var(--color-primary);
+    padding-left: 0.75rem;
+}
+
+.comparison-item.success-item {
+    border-left: 3px solid var(--color-success);
+    padding-left: 0.75rem;
+}
+
+.comparison-item.warning-item {
+    border-left: 3px solid var(--color-warning);
+    padding-left: 0.75rem;
+}
+
+.comparison-details .detail-row.secondary {
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+    opacity: 0.8;
+}
+
+/* WAN Detection Section */
+.wan-detection h4 {
+    color: var(--color-text-secondary);
+    margin-bottom: 0.75rem;
 }
 
 /* ============================================

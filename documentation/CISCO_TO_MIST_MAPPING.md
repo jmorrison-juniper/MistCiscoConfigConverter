@@ -13,6 +13,78 @@ This document tracks terminology conversions and configuration mappings between 
 | Wireless Controller | N/A | Mist is controller-less; APs connect directly to cloud |
 | Access Point | AP | Direct cloud-managed |
 
+## Cisco Password Encoding Types
+
+Cisco uses several password encoding/hashing methods. Only some are reversible:
+
+### Decodable (Reversible)
+
+| Type | Format | Algorithm | Notes |
+| ---- | ------ | --------- | ----- |
+| **Type 0** | `password 0 <plaintext>` | None (plaintext) | No decoding needed |
+| **Type 7** | `password 7 <hex>` | XOR with known key | Weak encoding, fully reversible |
+
+**Type 7 Details:**
+- Uses Vigenere cipher with fixed key: `dsfd;kfoA,.iyewrkldJKDHSUBsgvca69834ncxv9873254k;fg87`
+- First 2 hex digits are seed (00-15)
+- Remaining hex pairs are XORed with key starting at seed offset
+- Used for: TACACS keys, line passwords, some SNMP communities
+
+### Non-Decodable (One-Way Hashes)
+
+| Type | Format | Algorithm | Notes |
+| ---- | ------ | --------- | ----- |
+| **Type 4** | `secret 4 <hash>` | SHA-256 (unsalted) | Deprecated, weak but irreversible |
+| **Type 5** | `secret 5 $1$<salt>$<hash>` | MD5 crypt | Legacy, vulnerable to brute force |
+| **Type 8** | `secret 8 $8$<salt>$<hash>` | PBKDF2-SHA256 | Secure, recommended |
+| **Type 9** | `secret 9 $9$<salt>$<hash>` | scrypt | Most secure, recommended |
+
+**Migration Strategy for Non-Decodable Passwords:**
+- Cannot recover original password from Type 4/5/8/9
+- Parser extracts username and privilege level
+- User must provide new passwords during migration
+- Or configure manually in Mist portal after migration
+
+### Cisco Username Command Formats
+
+```
+username <name> privilege <level> password <type> <value>
+username <name> privilege <level> secret <type> <value>
+username <name> password <type> <value>
+username <name> secret <type> <value>
+```
+
+**Privilege Level to Mist Role Mapping:**
+
+| Cisco Privilege | Mist Role | Access Level |
+| --------------- | --------- | ------------ |
+| 15 | admin | Full administrative access |
+| 5-14 | helpdesk | Limited administrative access |
+| 1-4 | read | Read-only access |
+| 0 | none | No access |
+
+### Mist Local Account Configuration
+
+Mist stores local accounts in `switch_mgmt.local_accounts`:
+
+```json
+{
+  "switch_mgmt": {
+    "local_accounts": {
+      "admin": {
+        "password": "SecurePassword123",
+        "role": "admin"
+      },
+      "readonly": {
+        "password": "ReadOnlyPass",
+        "role": "read"
+      }
+    },
+    "root_password": "RootPassword123"
+  }
+}
+```
+
 ## Mist Template Types
 
 Understanding the different template/profile types in Mist and when to use each:
@@ -53,6 +125,36 @@ Hub gateways do NOT use Gateway Templates. Instead, they use **Device Profiles**
 | Standalone | Gateway Template (`type: "standalone"`) | YES - `gatewaytemplate_id` on site |
 
 **Do NOT use Site Templates for gateways** - Site Templates are exclusively for AP configuration.
+
+### Hub vs Spoke WAN Configuration Differences
+
+WAN interface configuration differs between hub and spoke gateways:
+
+| Aspect | Hub (Device Profile) | Spoke (Gateway Template) |
+| ------ | -------------------- | ------------------------ |
+| **IP Configuration** | Static recommended (VPN endpoint stability) | DHCP/PPPoE/Static all supported |
+| **Variable Usage** | Supported but typically uses literal values | Variable references (e.g., `{{wan1_ip}}`) |
+| **NAT Traversal** | Use `wan_ext_ip` for public IP | Not applicable |
+| **VPN Path Role** | `role: "hub"` in `vpn_paths` | `role: "spoke"` in `vpn_paths` |
+| **Path Selection** | Defined at org VPN level | Uses hub-defined strategy |
+
+#### Hub-Specific WAN Fields
+
+| Field | Location | Purpose |
+| ----- | -------- | ------- |
+| `wan_ext_ip` | `port_config.{port}` | Public IP for NAT scenarios (spokes reach hub via this IP) |
+| `path_selection` | Org VPN object | Strategy for spoke path selection (`disabled`, `simple`, `manual`) |
+| `pod` | VPN path | Pod assignment (1-128) for large deployments |
+
+#### VPN Path Configuration
+
+WAN interfaces participating in VPN overlay require a **role** assignment:
+
+- `role: "hub"` - Hub gateway WAN interfaces
+- `role: "spoke"` - Spoke gateway WAN interfaces
+- `role: "mesh"` - Mesh VPN topology
+
+**Note**: While hubs can technically use DHCP for WAN IP, static IP is strongly recommended because spokes need a predictable endpoint for tunnel establishment.
 
 ## Configuration Hierarchy
 
@@ -99,6 +201,82 @@ Verified in mistapi 0.59.x source code:
 | RADIUS Config | YES | YES | YES |
 | **Remote Syslog** | **YES** | NO | **YES** |
 | **SNMP Config** | **YES** | NO | **YES** |
+
+### Mist UI vs API Availability
+
+Some settings are available via API but not exposed in the Mist web UI:
+
+#### Site Configuration Page (Site > Configuration)
+
+**Visible in UI:**
+
+| Section | Settings Available |
+| ------- | ------------------ |
+| Information | Site name, Country, Timezone, Notes |
+| Site Proxy | Proxy URL |
+| Site Groups | Group membership |
+| Location | Street address, Lat/Long |
+| **Site Variables** | `vars` dictionary (Add Variable, Import Variables) |
+| AP Firmware Upgrade | Auto-update schedule |
+| Wireless Mesh | Enable mesh networking |
+| RF Template | Template selection |
+| Switch Management | Root password, Proxy |
+| WAN Edge Management | Root password, Conductor addresses, IDP upgrade schedule |
+| Mist Edge Management | FIPS, Tunnels |
+| Location Services | vBLE, WiFi location, Occupancy |
+
+**NOT Visible in UI (API Only):**
+
+| Setting | API Location | Notes |
+| ------- | ------------ | ----- |
+| `remote_syslog` | `PUT /api/v1/sites/{site_id}/setting` | Must configure via API |
+| `ntp_servers` | Site Settings API | May inherit from org/template |
+| `dns_servers` | Site Settings API | May inherit from org/template |
+| `snmp_config` | Site Settings API | May inherit from org/template |
+
+**Key Observation**: The Site Variables section is visible in the UI and can be populated with values like:
+
+- `branchvlan: "10"`
+- `ntp1: "192.168.1.1"`
+- `dns1: "1.1.1.1"`
+
+These variables can then be referenced in Gateway Templates using `{{variable}}` syntax.
+
+#### Organization Settings Page (Organization > Settings)
+
+**Visible in UI:**
+
+| Section | Settings Available |
+| ------- | ------------------ |
+| Organization Info | Name, ID, MSP assignment |
+| Password/Session Policy | Timeouts, password requirements |
+| Switch Management | Switch Proxy toggle |
+| Device Management | Remote Shell Access, Role-based access |
+| Firmware Upgrade | Switch/WAN Edge upgrade schedules |
+| Auto-Provisioning | Site Assignment, AP Name Generation, Device Profile Assignment |
+| API/Third Party Tokens | Token management |
+| Marvis Minis | Custom URLs for synthetic testing |
+| Integrations | Apstra, CloudShark, Juniper, Routing Assurance |
+| Certificates | Mist CA, RadSec, SSL Proxy Root |
+| SSO | Identity Providers, Roles |
+| Session Smart Conductor | Conductor IP addresses |
+| WAN Speed Test | Scheduler settings |
+| Access Assurance | Mist Auth settings |
+ par
+**NOT Visible in Org Settings UI:**
+
+| Setting | Notes |
+| ------- | ----- |
+| `ntp_servers` | Not configurable at org level in UI |
+| `dns_servers` | Not configurable at org level in UI |
+| `remote_syslog` | Not configurable at org level in UI |
+| `snmp_config` | Not configurable at org level in UI |
+
+**Conclusion**: NTP, DNS, Syslog, and SNMP are NOT configured at the Organization level UI. These settings flow through:
+
+1. **Gateway Templates** - Define `ntp_servers`, `dns_servers` (with `ntpOverride`/`dnsOverride` flags)
+2. **Site Settings API** - Configure `remote_syslog` (API only, no UI)
+3. **Site Variables** - Store site-specific values that templates reference via `{{variable}}`
 
 ## Logging Configuration
 
@@ -239,6 +417,96 @@ gateway_mgmt:
 | `ip name-server <ip>` | `dns_servers[]` | Site Settings or Gateway Template |
 | `ip domain name <name>` | `dns_suffix[]` | Site Settings or Gateway Template |
 
+## Site Variables in Gateway Templates
+
+Mist supports `{{variable}}` syntax in certain gateway template fields, allowing per-site customization without creating separate templates. Variables are resolved from:
+
+1. **Device `vars`** - Highest priority, set on individual device
+2. **Site `vars`** - Set in Site Settings, applies to all devices at site
+
+### Fields Supporting Site Variables
+
+Based on Mist API documentation analysis:
+
+| Field | Supports `{{var}}` | Example | Notes |
+| ----- | ------------------ | ------- | ----- |
+| `extra_routes` keys | **YES** | `"{{mynetwork}}"` | Destination CIDR can be variable |
+| `extra_routes6` keys | **YES** | `"{{mynetwork6}}"` | IPv6 destination can be variable |
+| `port_config` keys | **YES** | `"{{myport}}"` | Port name/range can be variable |
+| `port_config[].ip_config.ip` | **YES** | `"192.168.{{vlan}}.1"` | IP address |
+| `port_config[].ip_config.gateway` | **YES** | `"192.168.{{vlan}}.254"` | Gateway address |
+| `port_config[].ip_config.netmask` | **YES** | `"{{netmask}}"` | Netmask |
+| `port_config[].description` | **YES** | `"Site: {{sitename}}"` | Interface description |
+| `port_config[].vlan_id` | **YES** | `"{{branchvlan}}"` | VLAN ID |
+| `ip_configs` network name | **YES** | `"BranchVlan{{branchvlan}}"` | Network name key |
+| `ip_configs[].ip` | **YES** | `"192.168.{{branchvlan}}.1/24"` | Network IP/prefix |
+| `ntp_servers[]` | **YES** | `"{{ntp1}}"` | NTP server address |
+| `dns_servers[]` | **YES** | `"{{dns1}}"` | DNS server address |
+
+### Fields NOT Supporting Site Variables
+
+| Field | Type | Notes |
+| ----- | ---- | ----- |
+| `remote_syslog` | N/A | Not available in gateway template (Site Settings only) |
+| `ntpOverride` | boolean | Flag, not string |
+| `dnsOverride` | boolean | Flag, not string |
+
+### Override Flags
+
+Gateway templates have override flags that control inheritance from Site Settings:
+
+| Flag | Default | Behavior |
+| ---- | ------- | -------- |
+| `ntpOverride` | `false` | When false, gateway inherits NTP from Site Settings |
+| `dnsOverride` | `false` | When false, gateway inherits DNS from Site Settings |
+
+**Recommendation**: Set `ntpOverride: false` and `dnsOverride: false` in gateway templates, then configure NTP/DNS at Site Settings level for centralized management.
+
+### Example: Site Variables Configuration
+
+**Gateway Template** (shared across all branch sites):
+
+```yaml
+port_config:
+  ge-0/0/5:
+    networks:
+      - "BranchVlan{{branchvlan}}"
+ip_configs:
+  "BranchVlan{{branchvlan}}":
+    ip: "192.168.{{branchvlan}}.1/24"
+ntp_servers:
+  - "{{ntp1}}"
+  - "{{ntp2}}"
+dns_servers:
+  - "{{dns1}}"
+  - "{{dns2}}"
+```
+
+**Site Settings** (per-site values):
+
+```yaml
+vars:
+  branchvlan: "10"
+  ntp1: "192.168.1.1"
+  ntp2: "time.nist.gov"
+  dns1: "1.1.1.1"
+  dns2: "8.8.8.8"
+```
+
+**Device Config** (optional per-device override):
+
+```yaml
+vars:
+  branchvlan: "20"  # Overrides site value for this device only
+```
+
+### Best Practices for Site Variables
+
+1. **Use consistent naming**: Prefix related variables (e.g., `ntp1`, `ntp2`, `dns1`, `dns2`)
+2. **Document variables**: Keep a list of expected variables in gateway template description
+3. **Avoid over-templating**: Only use variables for values that actually vary between sites
+4. **Test variable resolution**: Mist shows "VAR" indicator in UI for fields using variables
+
 ## AAA/TACACS Configuration
 
 | Cisco Command | Mist Configuration | Location |
@@ -339,6 +607,113 @@ Configuration to Apply:
 2. `POST /api/v1/orgs/{org_id}/sites` - Create site (if needed)
 3. `PUT /api/v1/sites/{site_id}/setting` - Apply site settings (logging, SNMP, NTP, DNS)
 4. Gateway template association handled separately based on Hub/Branch selection
+
+---
+
+## Implementation: Site Variables Architecture
+
+This section documents how the converter tool stores Cisco-parsed values in Mist.
+
+### Architecture by Gateway Type
+
+| Gateway Type | NTP/DNS Storage | Syslog Storage | Template/Profile |
+| ------------ | --------------- | -------------- | ---------------- |
+| **Branch** | Site Variables | Site Settings | Gateway Template (type=spoke) |
+| **Standalone** | Site Variables | Site Settings | Gateway Template (type=standalone) |
+| **Hub** | Device Profile | Device Profile | Device Profile (type=gateway) |
+
+### Branch and Standalone Gateways
+
+- **Gateway Template**: Uses variable references `{{ntp1}}`, `{{ntp2}}`, `{{dns1}}`, `{{dns2}}`
+- **Site Variables**: Store actual values parsed from Cisco config
+- **Site Settings**: Store syslog configuration via `remote_syslog`
+
+**Flow**:
+1. Parse Cisco config -> Extract NTP, DNS, Syslog servers
+2. Create/get gateway template with variable references
+3. Create/update site with `gatewaytemplate_id`
+4. Call `update_site_variables()` to store NTP/DNS values
+5. Call `update_site_syslog()` to configure remote_syslog
+
+### Hub Gateways
+
+- **Device Profile**: Stores literal NTP/DNS/Syslog values directly
+- **Not site-attached**: Hub profiles are device-level, not site-level
+- **No site variables**: Values go directly into profile config
+
+**Flow**:
+1. Parse Cisco config -> Extract NTP, DNS, Syslog servers
+2. Create/get device profile with NTP/DNS/Syslog values
+3. Assign gateway devices to profile
+4. Site does NOT get `gatewaytemplate_id` (cleared if switching from branch)
+
+### Variable Names
+
+| Variable | Purpose | Example Value |
+| -------- | ------- | ------------- |
+| `ntp1` | Primary NTP server | `10.0.0.1` |
+| `ntp2` | Secondary NTP server | `10.0.0.2` |
+| `dns1` | Primary DNS server | `8.8.8.8` |
+| `dns2` | Secondary DNS server | `1.1.1.1` |
+
+### API Endpoints Used
+
+| Operation | API Endpoint | Method |
+| --------- | ------------ | ------ |
+| Update site variables | `/api/v1/sites/{site_id}/setting` | PUT |
+| Update site syslog | `/api/v1/sites/{site_id}/setting` | PUT |
+| Create gateway template | `/api/v1/orgs/{org_id}/gatewaytemplates` | POST |
+| Create device profile | `/api/v1/orgs/{org_id}/deviceprofiles` | POST |
+
+### Code References
+
+- `site_manager.py`: `update_site_variables()`, `update_site_syslog()`
+- `template_manager.py`: `create()`, `get_or_create_branch_template()`, `get_or_create_standalone_template()`
+- `profile_manager.py`: `create()`, `get_or_create_hub_profile()`
+- `app.py`: Orchestrates the conversion flow
+
+---
+
+## Features Requiring Workarounds
+
+Some Cisco features have no native Mist API equivalent but can be configured via `additional_config_cmds` (raw Junos CLI).
+
+### NetFlow / Flow Export
+
+**Cisco Config:**
+
+```text
+flow exporter EXPORTER-1
+ destination 10.1.1.100
+ transport udp 2055
+ export-protocol netflow-v9
+!
+flow monitor MONITOR-1
+ exporter EXPORTER-1
+ record netflow ipv4
+!
+interface GigabitEthernet0/0
+ ip flow monitor MONITOR-1 input
+```
+
+**Mist API Status:** No native support for flow export configuration.
+
+**Mist Alternative:** Built-in traffic analytics via Mist cloud (no external collector needed).
+
+**Workaround via additional_config_cmds:**
+
+```json
+{
+  "additional_config_cmds": [
+    "set forwarding-options sampling instance NETFLOW input rate 1000",
+    "set forwarding-options sampling instance NETFLOW family inet output flow-server 10.1.1.100 port 2055",
+    "set forwarding-options sampling instance NETFLOW family inet output flow-server 10.1.1.100 version 9",
+    "set forwarding-options sampling instance NETFLOW family inet output inline-jflow source-address 10.2.1.10"
+  ]
+}
+```
+
+**Parser Status:** Cisco NetFlow config is already parsed (`flow exporter`, `flow monitor`) but not yet converted to Junos jflow commands. Future enhancement could auto-generate `additional_config_cmds`.
 
 ---
 

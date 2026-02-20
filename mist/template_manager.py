@@ -80,18 +80,18 @@ class MistTemplateManager:
         self,
         template_name: str,
         template_type: str = "spoke",
-        ntp_servers: list[str] | None = None,
-        dns_servers: list[str] | None = None,
-        syslog_servers: list[str] | None = None
+        use_site_variables: bool = True
     ) -> dict | None:
         """Create a new gateway template.
+        
+        Templates use site variable references for NTP and DNS, allowing
+        different values per site. Syslog is configured via site settings,
+        not in templates.
         
         Args:
             template_name: Name for the new gateway template
             template_type: Type of gateway ('spoke' for branch, 'standalone')
-            ntp_servers: List of NTP server addresses
-            dns_servers: List of DNS server addresses
-            syslog_servers: List of syslog server addresses
+            use_site_variables: If True, include variable references for NTP/DNS
         
         Returns:
             Created template dict if successful, None on error.
@@ -105,27 +105,24 @@ class MistTemplateManager:
             "type": template_type
         }
         
-        # Add NTP servers if provided
-        if ntp_servers:
-            template_data["ntp_servers"] = ntp_servers
-        
-        # Add DNS servers if provided
-        if dns_servers:
-            template_data["dns_servers"] = dns_servers
-        
-        # Add remote syslog if provided
-        if syslog_servers:
+        # Add NTP/DNS/Syslog server variable references
+        # Site-specific values are stored in site vars (ntp1, ntp2, dns1, dns2, syslog1)
+        if use_site_variables:
+            template_data["ntp_servers"] = ["{{ntp1}}", "{{ntp2}}"]
+            template_data["dns_servers"] = ["{{dns1}}", "{{dns2}}"]
             template_data["remote_syslog"] = {
                 "enabled": True,
+                "send_to_all_servers": False,
                 "servers": [
                     {
-                        "host": server,
+                        "name": "syslog1",
+                        "host": "{{syslog1}}",
                         "port": 514,
                         "protocol": "udp",
                         "facility": "any",
-                        "severity": "info"
+                        "severity": "any",
+                        "tag": ""
                     }
-                    for server in syslog_servers
                 ]
             }
         
@@ -150,19 +147,16 @@ class MistTemplateManager:
     def update(
         self,
         template_id: str,
-        ntp_servers: list[str] | None = None,
-        dns_servers: list[str] | None = None,
-        syslog_servers: list[str] | None = None
+        use_site_variables: bool = False
     ) -> dict | None:
-        """Update an existing gateway template with NTP/DNS/syslog values.
+        """Update an existing gateway template to use site variable references.
         
-        Only updates fields that are provided (not None).
+        Sets NTP, DNS, and Syslog to use site variable references.
+        Variables: {{ntp1}}, {{ntp2}}, {{dns1}}, {{dns2}}, {{syslog1}}
         
         Args:
             template_id: ID of the template to update
-            ntp_servers: List of NTP server IPs
-            dns_servers: List of DNS server IPs
-            syslog_servers: List of syslog host IPs
+            use_site_variables: If True, set NTP/DNS/Syslog to variable references
         
         Returns:
             Updated template dict on success, None on error.
@@ -171,43 +165,32 @@ class MistTemplateManager:
         if not session:
             return None
         
-        update_data: dict[str, Any] = {}
-        
-        if ntp_servers:
-            update_data["ntp_servers"] = ntp_servers
-        
-        if dns_servers:
-            update_data["dns_servers"] = dns_servers
-        
-        if syslog_servers:
-            update_data["remote_syslog"] = {
-                "enabled": True,
-                "servers": [
-                    {
-                        "host": server,
-                        "port": 514,
-                        "protocol": "udp",
-                        "facility": "any",
-                        "severity": "info"
-                    }
-                    for server in syslog_servers
-                ]
-            }
-        
-        if not update_data:
+        if not use_site_variables:
             self._logger.debug("No updates to apply to template")
             return None
         
-        update_types = []
-        if "ntp_servers" in update_data:
-            update_types.append("NTP")
-        if "dns_servers" in update_data:
-            update_types.append("DNS")
-        if "remote_syslog" in update_data:
-            update_types.append("Syslog")
+        update_data: dict[str, Any] = {
+            "ntp_servers": ["{{ntp1}}", "{{ntp2}}"],
+            "dns_servers": ["{{dns1}}", "{{dns2}}"],
+            "remote_syslog": {
+                "enabled": True,
+                "send_to_all_servers": False,
+                "servers": [
+                    {
+                        "name": "syslog1",
+                        "host": "{{syslog1}}",
+                        "port": 514,
+                        "protocol": "udp",
+                        "facility": "any",
+                        "severity": "any",
+                        "tag": ""
+                    }
+                ]
+            }
+        }
         
         self._logger.info(
-            f"Updating gateway template {template_id} with {', '.join(update_types)}"
+            f"Updating gateway template {template_id} with site variable references"
         )
         
         try:
@@ -233,31 +216,32 @@ class MistTemplateManager:
         cisco_dns_servers: list[str],
         cisco_syslog_hosts: list[str]
     ) -> dict:
-        """Compare template config with Cisco parsed config.
+        """Compare Cisco parsed config values for display purposes.
+        
+        NOTE: With the new architecture, templates use site variable references
+        (e.g., {{ntp1}}, {{dns1}}) instead of literal values. Actual values
+        are stored in site variables. Syslog is configured via site settings,
+        not in templates.
+        
+        This method normalizes Cisco values and indicates that values will be
+        stored as site variables.
         
         Args:
-            template: Gateway template dict from Mist
+            template: Gateway template dict from Mist (for checking if vars are used)
             cisco_ntp_servers: NTP servers from Cisco config
             cisco_dns_servers: DNS servers from Cisco config  
             cisco_syslog_hosts: Syslog hosts from Cisco config
         
         Returns:
-            Dict with comparison results for each category:
-            {
-                "ntp": {"match": bool, "template": [...], "cisco": [...]},
-                "dns": {"match": bool, "template": [...], "cisco": [...]},
-                "syslog": {"match": bool, "template": [...], "cisco": [...]}
-            }
+            Dict with parsed values and storage destination.
         """
-        # Extract template values
+        # Template values (should be variable references)
         template_ntp = template.get("ntp_servers", [])
         template_dns = template.get("dns_servers", [])
         
-        # Extract syslog hosts from remote_syslog.servers
-        remote_syslog = template.get("remote_syslog", {})
-        template_syslog = []
-        if remote_syslog.get("enabled") and remote_syslog.get("servers"):
-            template_syslog = [s.get("host", "") for s in remote_syslog["servers"]]
+        # Check if template uses variable references
+        uses_ntp_vars = any("{{" in str(s) for s in template_ntp) if template_ntp else False
+        uses_dns_vars = any("{{" in str(s) for s in template_dns) if template_dns else False
         
         # Normalize Cisco NTP servers - may be strings or dicts with "server" key
         cisco_ntp_normalized = []
@@ -283,52 +267,214 @@ class MistTemplateManager:
             else:
                 cisco_syslog_normalized.append(str(host))
         
-        # Compare (order-independent)
-        ntp_match = set(template_ntp) == set(cisco_ntp_normalized)
-        dns_match = set(template_dns) == set(cisco_dns_normalized)
-        syslog_match = set(template_syslog) == set(cisco_syslog_normalized)
-        
-        # Check if template is empty but Cisco has values (will be auto-updated)
-        ntp_will_update = not template_ntp and cisco_ntp_normalized
-        dns_will_update = not template_dns and cisco_dns_normalized
-        syslog_will_update = not template_syslog and cisco_syslog_normalized
-        
         return {
             "ntp": {
-                "match": ntp_match,
+                "template_uses_vars": uses_ntp_vars,
                 "template": template_ntp,
                 "cisco": cisco_ntp_normalized,
-                "will_update_template": ntp_will_update
+                "destination": "site_variables",
+                "var_names": ["ntp1", "ntp2"]
             },
             "dns": {
-                "match": dns_match,
+                "template_uses_vars": uses_dns_vars,
                 "template": template_dns,
                 "cisco": cisco_dns_normalized,
-                "will_update_template": dns_will_update
+                "destination": "site_variables",
+                "var_names": ["dns1", "dns2"]
             },
             "syslog": {
-                "match": syslog_match,
-                "template": template_syslog,
+                "template": [],  # Syslog not in template anymore
                 "cisco": cisco_syslog_normalized,
-                "will_update_template": syslog_will_update
+                "destination": "site_settings",
+                "setting_name": "remote_syslog"
             }
         }
     
-    def get_or_create_branch_template(
+    def add_wan_variable_ports(
         self,
-        ntp_servers: list[str] | None = None,
-        dns_servers: list[str] | None = None,
-        syslog_servers: list[str] | None = None
-    ) -> tuple[dict | None, bool]:
+        template_id: str,
+        wan_interfaces: list[dict] | None = None,
+        existing_wan_vars: list[str] | None = None
+    ) -> dict | None:
+        """Add WAN interface port_config entries with variable references.
+        
+        Creates port_config entries with keys like "{{wan1}}", "{{wan2_lte}}" that
+        can be resolved per-site using site variables. Only adds variables
+        that don't already exist in the template.
+        
+        Configures full WAN interface settings including:
+        - IP config type (dhcp, static, pppoe)
+        - Static IP/subnet/gateway (as variable references)
+        - VLAN ID
+        - LTE settings (APN, auth, username, password)
+        
+        Args:
+            template_id: ID of the template to update
+            wan_interfaces: List of WAN interface dicts with keys:
+                - name: Original interface name (e.g., "GigabitEthernet0/0/0")
+                - wan_var_name: Variable name (e.g., "wan1", "wan2_lte")
+                - wan_type: "broadband" or "lte"
+                - ip_config_type: "dhcp", "static", "pppoe", "negotiated"
+                - ip_address, subnet_mask, default_gateway: Static IP details
+                - encap_vlan_id: VLAN ID for tagged WAN
+                - shutdown: Admin state
+                - upload_kbps: Upload bandwidth for traffic shaping (0 if not found)
+                - download_kbps: Download bandwidth for traffic shaping (0 if not found)
+                - lte_apn, lte_auth, lte_username, lte_password: LTE settings
+                - is_cellular: bool
+                - cellular_slot: int or None
+            existing_wan_vars: List of WAN var names already in template (e.g., ["wan1"])
+        
+        Returns:
+            Updated template dict on success, None on error.
+        """
+        session = self.connection.session
+        if not session:
+            return None
+        
+        existing_wan_vars = existing_wan_vars or []
+        wan_interfaces = wan_interfaces or []
+        
+        # Build port_config entries for ALL WAN variables
+        # Always update to ensure name/description and other fields are current
+        port_config: dict[str, Any] = {}
+        updated_vars = []
+        
+        for wan_interface in wan_interfaces:
+            var_name = wan_interface.get("wan_var_name", "")
+            wan_type = wan_interface.get("wan_type", "broadband")
+            ip_config_type = wan_interface.get("ip_config_type", "dhcp") or "dhcp"
+            
+            if var_name:
+                port_key = "{{" + var_name + "}}"
+                
+                # Build ip_config based on parsed config type
+                ip_config: dict[str, Any] = {}
+                
+                if ip_config_type == "static":
+                    ip_config["type"] = "static"
+                    # Use variable references for IP config values
+                    ip_config["ip"] = "{{" + var_name + "_ip}}"
+                    ip_config["netmask"] = "/{{" + var_name + "_subnet}}"
+                    ip_config["gateway"] = "{{" + var_name + "_gateway}}"
+                elif ip_config_type == "pppoe" or ip_config_type == "negotiated":
+                    ip_config["type"] = "pppoe"
+                    # PPPoE credentials would come from site variables if needed
+                elif ip_config_type == "dhcp":
+                    ip_config["type"] = "dhcp"
+                else:
+                    ip_config["type"] = "dhcp"  # Default to DHCP
+                
+                # Build port config entry
+                port_entry: dict[str, Any] = {
+                    "usage": "wan",
+                    "name": "{{" + var_name + "_name}}",
+                    "description": "{{" + var_name + "_desc}}",
+                    "aggregated": False,
+                    "redundant": False,
+                    "critical": False,
+                    "wan_type": wan_type,
+                    "ip_config": ip_config,
+                    "disable_autoneg": False,
+                    "wan_source_nat": {
+                        "disabled": False
+                    }
+                }
+                
+                # Add VLAN ID if configured
+                vlan_id = wan_interface.get("encap_vlan_id", 0)
+                if vlan_id and vlan_id > 0:
+                    port_entry["vlan_id"] = "{{" + var_name + "_vlan}}"
+                
+                # Add disabled state if interface is shutdown
+                if wan_interface.get("shutdown", False):
+                    port_entry["disabled"] = True
+                
+                # Always add traffic shaping with variable references
+                # If the site doesn't have the variable, the config won't resolve/activate
+                port_entry["traffic_shaping"] = {
+                    "enabled": True,
+                    "max_tx_kbps": "{{" + var_name + "_upload_kbps}}"
+                }
+                
+                # Add LTE-specific settings
+                if wan_type == "lte":
+                    lte_apn = wan_interface.get("lte_apn", "")
+                    lte_auth = wan_interface.get("lte_auth", "none") or "none"
+                    lte_username = wan_interface.get("lte_username", "")
+                    lte_password = wan_interface.get("lte_password", "")
+                    
+                    if lte_apn:
+                        # Use direct value or variable reference
+                        port_entry["lte_apn"] = "{{" + var_name + "_apn}}"
+                    
+                    if lte_auth and lte_auth != "none":
+                        port_entry["lte_auth"] = lte_auth
+                        if lte_username:
+                            port_entry["lte_username"] = "{{" + var_name + "_user}}"
+                        if lte_password:
+                            port_entry["lte_password"] = "{{" + var_name + "_pass}}"
+                    else:
+                        port_entry["lte_auth"] = "none"
+                    
+                    # LTE typically uses DHCP for IP
+                    port_entry["ip_config"] = {"type": "dhcp"}
+                
+                port_config[port_key] = port_entry
+                updated_vars.append(var_name)
+        
+        if not port_config:
+            self._logger.debug(
+                "No WAN interfaces to configure in template"
+            )
+            return None
+        
+        self._logger.info(
+            f"Updating WAN variable ports in template {template_id}: {updated_vars}"
+        )
+        
+        try:
+            # First get existing port_config to merge
+            response = mistapi.api.v1.orgs.gatewaytemplates.getOrgGatewayTemplate(
+                session, self.connection.org_id, template_id
+            )
+            if response.status_code != 200:
+                self._logger.error(
+                    f"Failed to get template for port_config merge: {response.status_code}"
+                )
+                return None
+            
+            existing_template = response.data
+            existing_port_config = existing_template.get("port_config", {})
+            
+            # Merge new WAN ports with existing config
+            merged_port_config = {**existing_port_config, **port_config}
+            
+            update_data = {"port_config": merged_port_config}
+            
+            response = mistapi.api.v1.orgs.gatewaytemplates.updateOrgGatewayTemplate(
+                session, self.connection.org_id, template_id, update_data
+            )
+            if response.status_code == 200:
+                self._logger.info(
+                    f"Template {template_id} updated with WAN ports: {list(port_config.keys())}"
+                )
+                return response.data
+            else:
+                self._logger.error(
+                    f"Failed to update template with WAN ports: {response.status_code}"
+                )
+                return None
+        except Exception as error:
+            self._logger.error(f"Error adding WAN ports to template: {error}")
+            return None
+
+    def get_or_create_branch_template(self) -> tuple[dict | None, bool]:
         """Get the branch gateway template, creating it if it doesn't exist.
         
         Uses the configured branch_template_name (default: Branch-Default-Template).
-        Creates with type='spoke' if not found, using provided config values.
-        
-        Args:
-            ntp_servers: NTP servers for new template creation
-            dns_servers: DNS servers for new template creation
-            syslog_servers: Syslog servers for new template creation
+        Creates with type='spoke' if not found. Template uses site variable
+        references for NTP/DNS. Syslog is configured via site settings.
         
         Returns:
             Tuple of (template dict, was_created bool). Template is None on error.
@@ -346,27 +492,16 @@ class MistTemplateManager:
         new_template = self.create(
             self.branch_template_name, 
             template_type="spoke",
-            ntp_servers=ntp_servers,
-            dns_servers=dns_servers,
-            syslog_servers=syslog_servers
+            use_site_variables=True
         )
         return new_template, new_template is not None
     
-    def get_or_create_standalone_template(
-        self,
-        ntp_servers: list[str] | None = None,
-        dns_servers: list[str] | None = None,
-        syslog_servers: list[str] | None = None
-    ) -> tuple[dict | None, bool]:
+    def get_or_create_standalone_template(self) -> tuple[dict | None, bool]:
         """Get the standalone gateway template, creating it if it doesn't exist.
         
         Uses the configured standalone_template_name (default: Standalone-Default-Template).
-        Creates with type='standalone' if not found, using provided config values.
-        
-        Args:
-            ntp_servers: NTP servers for new template creation
-            dns_servers: DNS servers for new template creation
-            syslog_servers: Syslog servers for new template creation
+        Creates with type='standalone' if not found. Template uses site variable
+        references for NTP/DNS. Syslog is configured via site settings.
         
         Returns:
             Tuple of (template dict, was_created bool). Template is None on error.
@@ -384,8 +519,6 @@ class MistTemplateManager:
         new_template = self.create(
             self.standalone_template_name, 
             template_type="standalone",
-            ntp_servers=ntp_servers,
-            dns_servers=dns_servers,
-            syslog_servers=syslog_servers
+            use_site_variables=True
         )
         return new_template, new_template is not None

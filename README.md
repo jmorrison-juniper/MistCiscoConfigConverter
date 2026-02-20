@@ -173,11 +173,42 @@ Environment variables for tuning:
 | `GUNICORN_BIND`      | 0.0.0.0:8000  | Bind address               |
 | `GUNICORN_LOG_LEVEL` | info          | Logging level              |
 
+## Power User Mode
+
+Enable administrative features by setting `POWERUSER=true` in `.env`:
+
+```bash
+POWERUSER=true
+```
+
+This enables bulk backup, restore, and delete operations for:
+
+| Object           | Backup | Restore | Delete All |
+| ---------------- | ------ | ------- | ---------- |
+| Service Policies | Yes    | Yes     | -          |
+| Services         | Yes    | Yes     | Yes        |
+| Networks         | Yes    | Yes     | Yes        |
+
+Backup files are stored in `output/` with timestamped filenames.
+
+**WARNING**: Destructive operations require double confirmation (confirm dialog + type CONFIRM).
+
 ## License
 
 CC BY-NC 4.0 - See [LICENSE](LICENSE) for details.
 
 ## Changelog
+
+### v26.02.19
+
+- Power user backup/restore/delete functionality for:
+  - Service Policies (backup, restore)
+  - Services (backup, restore, delete all)
+  - Networks (backup, restore, delete all)
+- Backup files stored in `output/` folder with timestamps
+- Restore matches by name: updates existing, creates new
+- All destructive operations require CONFIRM confirmation
+- UI groups power user buttons with separators
 
 ### v26.02.18
 

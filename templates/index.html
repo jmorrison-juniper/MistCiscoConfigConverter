@@ -13,6 +13,58 @@
         <span class="status-text">Checking...</span>
     </div>
 
+    {% if poweruser %}
+    <!-- Power User Controls - DESTRUCTIVE OPERATIONS -->
+    <div id="powerUserControls" class="poweruser-controls">
+        <span class="poweruser-label">POWER USER MODE</span>
+        <button type="button" class="btn btn-secondary btn-small" id="backupServicePoliciesBtn" title="Backup all service policies to a JSON file">
+            Backup Service Policies
+        </button>
+        <select id="restoreFileSelect" class="restore-select" title="Select a backup file to restore">
+            <option value="">-- Select backup --</option>
+        </select>
+        <button type="button" class="btn btn-warning btn-small" id="restoreServicePoliciesBtn" title="Restore service policies from selected backup file">
+            Restore Service Policies
+        </button>
+        <span class="poweruser-separator">|</span>
+        <button type="button" class="btn btn-secondary btn-small" id="backupServicesBtn" title="Backup all services to a JSON file">
+            Backup Services
+        </button>
+        <select id="restoreServicesFileSelect" class="restore-select" title="Select a service backup file to restore">
+            <option value="">-- Select backup --</option>
+        </select>
+        <button type="button" class="btn btn-warning btn-small" id="restoreServicesBtn" title="Restore services from selected backup file">
+            Restore Services
+        </button>
+        <button type="button" class="btn btn-danger btn-small" id="deleteAllServicesBtn" title="Delete all services from the organization">
+            Delete All Services
+        </button>
+        <span class="poweruser-separator">|</span>
+        <button type="button" class="btn btn-secondary btn-small" id="backupNetworksBtn" title="Backup all networks to a JSON file">
+            Backup Networks
+        </button>
+        <select id="restoreNetworksFileSelect" class="restore-select" title="Select a network backup file to restore">
+            <option value="">-- Select backup --</option>
+        </select>
+        <button type="button" class="btn btn-warning btn-small" id="restoreNetworksBtn" title="Restore networks from selected backup file">
+            Restore Networks
+        </button>
+        <button type="button" class="btn btn-danger btn-small" id="deleteAllNetworksBtn" title="Delete all networks from the organization">
+            Delete All Networks
+        </button>
+        <span class="poweruser-separator">|</span>
+        <button type="button" class="btn btn-danger btn-small" id="unassignAllBtn" title="Unassign all gateway templates from all sites and devices">
+            Unassign All Templates
+        </button>
+        <button type="button" class="btn btn-danger btn-small" id="deleteAllBtn" title="Delete all gateway templates and device profiles">
+            Delete All Templates
+        </button>
+        <button type="button" class="btn btn-warning btn-small" id="unassignTemplatedDevicesBtn" title="Move gateway devices from templated sites and hub profiles to unassigned inventory">
+            Unassign Templated Devices
+        </button>
+    </div>
+    {% endif %}
+
     <h1>Mist Cisco Config Converter</h1>
     <p class="subtitle">Convert Cisco IOS configurations to Juniper Mist format</p>
     
@@ -63,6 +115,16 @@
                     <label for="gatewayStandalone" class="gateway-type-btn">Standalone</label>
                 </div>
             </div>
+            <!-- Hardware Type Selection -->
+            <div class="gateway-type-section">
+                <span class="gateway-type-label">Hardware:</span>
+                <div class="gateway-type-buttons">
+                    <input type="radio" id="hardwareSRX" name="hardwareType" value="srx" checked>
+                    <label for="hardwareSRX" class="gateway-type-btn">SRX</label>
+                    <input type="radio" id="hardwareSSR" name="hardwareType" value="ssr">
+                    <label for="hardwareSSR" class="gateway-type-btn">SSR</label>
+                </div>
+            </div>
             <div class="action-buttons">
                 <button type="button" class="btn btn-secondary" id="displayBtn" disabled>Display Only</button>
                 <button type="button" class="btn btn-primary" id="convertBtn" disabled>Convert to Mist</button>
@@ -91,6 +153,7 @@
     <div class="theme-badge">Theme: {{ theme }}</div>
 
     <script>
+        console.log('DEBUG: Script starting');
         const dropZone = document.getElementById('dropZone');
         const fileInput = document.getElementById('configFile');
         const selectedFile = document.getElementById('selectedFile');
@@ -107,10 +170,13 @@
         const gatewayBranch = document.getElementById('gatewayBranch');
         const gatewayHub = document.getElementById('gatewayHub');
         const gatewayStandalone = document.getElementById('gatewayStandalone');
+        const hardwareSRX = document.getElementById('hardwareSRX');
+        const hardwareSSR = document.getElementById('hardwareSSR');
 
         // Track current selection mode and gateway type
         let currentMode = null; // 'select' or 'upload'
         let gatewayType = null; // 'branch', 'hub', or 'standalone'
+        let hardwareType = 'srx'; // 'srx' or 'ssr' (default: srx)
 
         // Load available files and check Mist status on page load
         loadFiles();
@@ -118,12 +184,16 @@
 
         // Check Mist cloud connection status
         async function checkMistStatus() {
+            console.log('DEBUG: checkMistStatus called');
             const statusDiv = document.getElementById('mistStatus');
             const statusText = statusDiv.querySelector('.status-text');
             
             try {
+                console.log('DEBUG: Fetching /api/mist-status');
                 const response = await fetch('/api/mist-status');
+                console.log('DEBUG: checkMistStatus response status:', response.status);
                 const data = await response.json();
+                console.log('DEBUG: checkMistStatus data:', data);
                 
                 statusDiv.classList.remove('loading');
                 
@@ -153,9 +223,13 @@
         }
 
         async function loadFiles() {
+            console.log('DEBUG: loadFiles called');
             try {
+                console.log('DEBUG: Fetching /api/files');
                 const response = await fetch('/api/files');
+                console.log('DEBUG: loadFiles response status:', response.status);
                 const data = await response.json();
+                console.log('DEBUG: loadFiles data:', data);
                 
                 fileSelect.innerHTML = '<option value="">-- Select a config file --</option>';
                 data.files.forEach(file => {
@@ -203,6 +277,19 @@
             if (gatewayStandalone.checked) {
                 gatewayType = 'standalone';
                 updateButtons();
+            }
+        });
+
+        // Hardware type radio button handlers
+        hardwareSRX.addEventListener('change', () => {
+            if (hardwareSRX.checked) {
+                hardwareType = 'srx';
+            }
+        });
+
+        hardwareSSR.addEventListener('change', () => {
+            if (hardwareSSR.checked) {
+                hardwareType = 'ssr';
             }
         });
 
@@ -488,6 +575,7 @@
             
             const formData = new FormData();
             formData.append('gateway_type', gatewayType);
+            formData.append('hardware_type', hardwareType);
             
             if (currentMode === 'select') {
                 formData.append('selected_file', fileSelect.value);
@@ -584,6 +672,25 @@
                 </div>` : ''}
             `;
             
+            // Display config warnings prominently if any
+            const configWarnings = proposed.config_warnings || [];
+            if (configWarnings.length > 0) {
+                confirmHtml += `
+                <div class="confirm-section">
+                    <h4 style="color: #f0ad4e;">Configuration Warnings</h4>
+                `;
+                configWarnings.forEach(warning => {
+                    confirmHtml += `
+                    <div class="comparison-item warning-item">
+                        <div class="comparison-details">
+                            <span class="detail-row">${warning}</span>
+                        </div>
+                    </div>
+                    `;
+                });
+                confirmHtml += `</div>`;
+            }
+            
             // For hub, branch, or standalone mode, add gateway selection placeholder
             // This allows assigning unassigned devices to new or empty sites
             if (proposed.gateway_type === 'hub' || proposed.gateway_type === 'branch' || proposed.gateway_type === 'standalone') {
@@ -617,172 +724,337 @@
                         </div>
                     `;
                     
-                    // Show comparison and override options if template exists and has differences
+                    // Show comparison info if template exists
                     if (templateInfo.exists && comparison) {
-                        // Check for actual differences (not just auto-update cases)
-                        const hasNtpDiff = !comparison.ntp.match && !comparison.ntp.will_update_template;
-                        const hasDnsDiff = !comparison.dns.match && !comparison.dns.will_update_template;
-                        const hasSyslogDiff = !comparison.syslog.match && !comparison.syslog.will_update_template;
-                        const hasAnyDifference = hasNtpDiff || hasDnsDiff || hasSyslogDiff;
+                        // New architecture: templates use variable references
+                        // NTP/DNS/Syslog all go to site variables
+                        const templateUsesVars = comparison.ntp?.template_uses_vars || comparison.dns?.template_uses_vars;
+                        const ciscoNtp = comparison.ntp?.cisco || [];
+                        const ciscoDns = comparison.dns?.cisco || [];
+                        const ciscoSyslog = comparison.syslog?.cisco || [];
+                        const ciscoDnsSuffix = proposed.parsed_data?.dns?.domain_name || '';
+                        const ciscoSnmpCommunities = proposed.parsed_data?.snmp?.community_strings || [];
+                        const ciscoTacacsServers = proposed.parsed_data?.tacacs?.servers || [];
+                        const ciscoLocalAccounts = proposed.parsed_data?.local_accounts || [];
+                        const decodableAccounts = ciscoLocalAccounts.filter(a => a.is_decodable);
+                        const nonDecodableAccounts = ciscoLocalAccounts.filter(a => !a.is_decodable);
+                        const templateNtp = comparison.ntp?.template || [];
+                        const templateDns = comparison.dns?.template || [];
                         
-                        // Check for auto-update cases (template empty, Cisco has values)
-                        const hasNtpUpdate = comparison.ntp.will_update_template;
-                        const hasDnsUpdate = comparison.dns.will_update_template;
-                        const hasSyslogUpdate = comparison.syslog.will_update_template;
-                        const hasAnyUpdate = hasNtpUpdate || hasDnsUpdate || hasSyslogUpdate;
-                        
-                        // Show auto-update message if template will be populated
-                        if (hasAnyUpdate) {
+                        if (templateUsesVars) {
+                            // Template uses variable references - show where values will be stored
                             confirmHtml += `
                             <div class="config-comparison">
-                                <p class="success-message">The ${templateLabel.toLowerCase()} will be updated with Cisco config values:</p>
+                                <p class="success-message">Template uses site variable references. Cisco values will be stored as:</p>
                             `;
                             
-                            if (hasNtpUpdate) {
-                                const ciscoNtp = comparison.ntp.cisco.join(', ');
+                            if (ciscoNtp.length > 0) {
                                 confirmHtml += `
                                 <div class="comparison-item update-item">
                                     <div class="comparison-details">
-                                        <span class="detail-row"><strong>NTP:</strong> ${ciscoNtp}</span>
+                                        <span class="detail-row"><strong>Site Variables:</strong> ntp1=${ciscoNtp[0] || ''}, ntp2=${ciscoNtp[1] || ''}</span>
                                     </div>
                                 </div>
                                 `;
                             }
                             
-                            if (hasDnsUpdate) {
-                                const ciscoDns = comparison.dns.cisco.join(', ');
+                            if (ciscoDns.length > 0) {
                                 confirmHtml += `
                                 <div class="comparison-item update-item">
                                     <div class="comparison-details">
-                                        <span class="detail-row"><strong>DNS:</strong> ${ciscoDns}</span>
+                                        <span class="detail-row"><strong>Site Variables:</strong> dns1=${ciscoDns[0] || ''}, dns2=${ciscoDns[1] || ''}</span>
                                     </div>
                                 </div>
                                 `;
                             }
                             
-                            if (hasSyslogUpdate) {
-                                const ciscoSyslog = comparison.syslog.cisco.join(', ');
+                            if (ciscoSyslog.length > 0) {
                                 confirmHtml += `
                                 <div class="comparison-item update-item">
                                     <div class="comparison-details">
-                                        <span class="detail-row"><strong>Syslog:</strong> ${ciscoSyslog}</span>
+                                        <span class="detail-row"><strong>Site Variables:</strong> syslog1=${ciscoSyslog[0] || ''}</span>
+                                    </div>
+                                </div>
+                                `;
+                            }
+                            
+                            if (ciscoDnsSuffix) {
+                                confirmHtml += `
+                                <div class="comparison-item update-item">
+                                    <div class="comparison-details">
+                                        <span class="detail-row"><strong>Site Setting (DNS Suffix):</strong> ${ciscoDnsSuffix}</span>
+                                    </div>
+                                </div>
+                                `;
+                            }
+                            
+                            if (ciscoSnmpCommunities.length > 0) {
+                                const communities = ciscoSnmpCommunities.map(c => c.community || '').filter(c => c).join(', ');
+                                confirmHtml += `
+                                <div class="comparison-item update-item">
+                                    <div class="comparison-details">
+                                        <span class="detail-row"><strong>Site Setting (SNMP):</strong> ${communities}</span>
+                                    </div>
+                                </div>
+                                `;
+                            }
+                            
+                            if (ciscoTacacsServers.length > 0) {
+                                const tacacsHosts = ciscoTacacsServers.map(s => s.host || '').filter(h => h).join(', ');
+                                confirmHtml += `
+                                <div class="comparison-item update-item">
+                                    <div class="comparison-details">
+                                        <span class="detail-row"><strong>Site Setting (TACACS+):</strong> ${tacacsHosts}</span>
+                                    </div>
+                                </div>
+                                `;
+                            }
+                            
+                            if (decodableAccounts.length > 0) {
+                                const accountsList = decodableAccounts.map(a => `${a.username} (${a.mist_role})`).join(', ');
+                                confirmHtml += `
+                                <div class="comparison-item update-item">
+                                    <div class="comparison-details">
+                                        <span class="detail-row"><strong>Site Setting (Local Accounts):</strong> ${accountsList}</span>
+                                    </div>
+                                </div>
+                                `;
+                            }
+                            
+                            if (nonDecodableAccounts.length > 0) {
+                                const skippedList = nonDecodableAccounts.map(a => `${a.username} (Type ${a.password_type})`).join(', ');
+                                confirmHtml += `
+                                <div class="comparison-item warning-item">
+                                    <div class="comparison-details">
+                                        <span class="detail-row"><strong>Skipped Accounts (hashed passwords):</strong> ${skippedList}</span>
                                     </div>
                                 </div>
                                 `;
                             }
                             
                             confirmHtml += `</div>`; // close config-comparison
-                        }
-                        
-                        if (hasAnyDifference) {
+                        } else {
+                            // Template has literal values (legacy or hub profile)
+                            // Show what's in template vs what's in Cisco config
                             confirmHtml += `
                             <div class="config-comparison">
-                                <p class="info-message">The ${templateLabel.toLowerCase()} has different NTP/DNS/Syslog settings than the Cisco config. Select which values to override at the device/site level:</p>
-                            `;
-                            
-                            // NTP comparison
-                            if (hasNtpDiff) {
-                                const ciscoNtp = comparison.ntp.cisco.length > 0 ? comparison.ntp.cisco.join(', ') : '(none)';
-                                const templateNtp = comparison.ntp.template.length > 0 ? comparison.ntp.template.join(', ') : '(none)';
-                                const ntpChecked = comparison.ntp.template.length === 0 ? 'checked' : '';
-                                confirmHtml += `
+                                <p class="info-message">Template configuration:</p>
                                 <div class="comparison-item">
-                                    <label class="checkbox-container">
-                                        <input type="checkbox" id="override_ntp" name="override_ntp" value="true" ${ntpChecked}>
-                                        <span class="checkbox-label">Override NTP servers</span>
-                                    </label>
                                     <div class="comparison-details">
-                                        <span class="detail-row"><strong>Template:</strong> ${templateNtp}</span>
-                                        <span class="detail-row"><strong>Cisco:</strong> ${ciscoNtp}</span>
+                                        <span class="detail-row"><strong>Template NTP:</strong> ${templateNtp.join(', ') || '(none)'}</span>
+                                        <span class="detail-row"><strong>Cisco NTP:</strong> ${ciscoNtp.join(', ') || '(none)'}</span>
                                     </div>
                                 </div>
-                                `;
-                            }
-                            
-                            // DNS comparison
-                            if (hasDnsDiff) {
-                                const ciscoDns = comparison.dns.cisco.length > 0 ? comparison.dns.cisco.join(', ') : '(none)';
-                                const templateDns = comparison.dns.template.length > 0 ? comparison.dns.template.join(', ') : '(none)';
-                                const dnsChecked = comparison.dns.template.length === 0 ? 'checked' : '';
-                                confirmHtml += `
                                 <div class="comparison-item">
-                                    <label class="checkbox-container">
-                                        <input type="checkbox" id="override_dns" name="override_dns" value="true" ${dnsChecked}>
-                                        <span class="checkbox-label">Override DNS servers</span>
-                                    </label>
                                     <div class="comparison-details">
-                                        <span class="detail-row"><strong>Template:</strong> ${templateDns}</span>
-                                        <span class="detail-row"><strong>Cisco:</strong> ${ciscoDns}</span>
+                                        <span class="detail-row"><strong>Template DNS:</strong> ${templateDns.join(', ') || '(none)'}</span>
+                                        <span class="detail-row"><strong>Cisco DNS:</strong> ${ciscoDns.join(', ') || '(none)'}</span>
                                     </div>
                                 </div>
-                                `;
-                            }
-                            
-                            // Syslog comparison
-                            if (hasSyslogDiff) {
-                                const ciscoSyslog = comparison.syslog.cisco.length > 0 ? comparison.syslog.cisco.join(', ') : '(none)';
-                                const templateSyslog = comparison.syslog.template.length > 0 ? comparison.syslog.template.join(', ') : '(none)';
-                                const syslogChecked = comparison.syslog.template.length === 0 ? 'checked' : '';
-                                confirmHtml += `
-                                <div class="comparison-item">
-                                    <label class="checkbox-container">
-                                        <input type="checkbox" id="override_syslog" name="override_syslog" value="true" ${syslogChecked}>
-                                        <span class="checkbox-label">Override Syslog servers</span>
-                                    </label>
-                                    <div class="comparison-details">
-                                        <span class="detail-row"><strong>Template:</strong> ${templateSyslog}</span>
-                                        <span class="detail-row"><strong>Cisco:</strong> ${ciscoSyslog}</span>
-                                    </div>
-                                </div>
-                                `;
-                            }
-                            
-                            confirmHtml += `</div>`; // close config-comparison
-                        } else if (!hasAnyUpdate) {
-                            confirmHtml += `
-                            <div class="confirm-row">
-                                <span class="success-message">NTP, DNS, and Syslog settings match the Cisco config.</span>
                             </div>
                             `;
                         }
                     } else if (!templateInfo.exists) {
-                        // Template will be created with Cisco config values
-                        // NTP servers may be objects with "server" key or strings
+                        // Template will be created with variable references
+                        // Actual values go to site variables (NTP/DNS/Syslog)
                         const rawNtp = proposed.parsed_data?.ntp?.servers || [];
                         const ntp = rawNtp.map(s => typeof s === 'object' ? s.server || '' : s).filter(s => s);
                         const syslog = proposed.parsed_data?.logging?.hosts || [];
                         const dns = proposed.parsed_data?.dns?.servers || [];
-                        if (ntp.length > 0 || syslog.length > 0 || dns.length > 0) {
+                        const dnsSuffix = proposed.parsed_data?.dns?.domain_name || '';
+                        const snmpCommunities = proposed.parsed_data?.snmp?.community_strings || [];
+                        const tacacsServers = proposed.parsed_data?.tacacs?.servers || [];
+                        
+                        // Always show template creation info
+                        confirmHtml += `
+                        <div class="confirm-row">
+                            <span class="info-message">New ${templateLabel.toLowerCase()} will be created with site variable references.</span>
+                        </div>
+                        <div class="confirm-row">
+                            <span class="confirm-label">Template NTP:</span>
+                            <span class="confirm-value monospace">{{ '{{ntp1}}, {{ntp2}}' }}</span>
+                        </div>
+                        <div class="confirm-row">
+                            <span class="confirm-label">Template DNS:</span>
+                            <span class="confirm-value monospace">{{ '{{dns1}}, {{dns2}}' }}</span>
+                        </div>
+                        <div class="confirm-row">
+                            <span class="confirm-label">Template Syslog:</span>
+                            <span class="confirm-value monospace">{{ '{{syslog1}}' }}</span>
+                        </div>
+                        `;
+                        
+                        // Show what values will be stored
+                        if (ntp.length > 0 || syslog.length > 0 || dns.length > 0 || dnsSuffix || snmpCommunities.length > 0 || tacacsServers.length > 0) {
                             confirmHtml += `
-                            <div class="confirm-row">
-                                <span class="info-message">New ${templateLabel.toLowerCase()} will be created with Cisco config values:</span>
+                            <div class="confirm-row" style="margin-top: 0.75rem;">
+                                <span class="info-message">Cisco values will be stored as:</span>
                             </div>
                             `;
                             if (ntp.length > 0) {
                                 confirmHtml += `
                                 <div class="confirm-row">
-                                    <span class="confirm-label">NTP:</span>
-                                    <span class="confirm-value">${ntp.join(', ')}</span>
+                                    <span class="confirm-label">Site Variables (NTP):</span>
+                                    <span class="confirm-value">ntp1=${ntp[0] || ''}, ntp2=${ntp[1] || ''}</span>
                                 </div>
                                 `;
                             }
                             if (dns.length > 0) {
                                 confirmHtml += `
                                 <div class="confirm-row">
-                                    <span class="confirm-label">DNS:</span>
-                                    <span class="confirm-value">${dns.join(', ')}</span>
+                                    <span class="confirm-label">Site Variables (DNS):</span>
+                                    <span class="confirm-value">dns1=${dns[0] || ''}, dns2=${dns[1] || ''}</span>
                                 </div>
                                 `;
                             }
                             if (syslog.length > 0) {
                                 confirmHtml += `
                                 <div class="confirm-row">
-                                    <span class="confirm-label">Syslog:</span>
-                                    <span class="confirm-value">${syslog.join(', ')}</span>
+                                    <span class="confirm-label">Site Variables (Syslog):</span>
+                                    <span class="confirm-value">syslog1=${syslog[0] || ''}</span>
+                                </div>
+                                `;
+                            }
+                            if (dnsSuffix) {
+                                confirmHtml += `
+                                <div class="confirm-row">
+                                    <span class="confirm-label">Site Setting (DNS Suffix):</span>
+                                    <span class="confirm-value">${dnsSuffix}</span>
+                                </div>
+                                `;
+                            }
+                            if (snmpCommunities.length > 0) {
+                                const communities = snmpCommunities.map(c => c.community || '').filter(c => c).join(', ');
+                                confirmHtml += `
+                                <div class="confirm-row">
+                                    <span class="confirm-label">Site Setting (SNMP):</span>
+                                    <span class="confirm-value">${communities}</span>
+                                </div>
+                                `;
+                            }
+                            if (tacacsServers.length > 0) {
+                                const tacacsHosts = tacacsServers.map(s => s.host || '').filter(h => h).join(', ');
+                                confirmHtml += `
+                                <div class="confirm-row">
+                                    <span class="confirm-label">Site Setting (TACACS+):</span>
+                                    <span class="confirm-value">${tacacsHosts}</span>
                                 </div>
                                 `;
                             }
                         }
+                    }
+                    
+                    // WAN Interface detection section
+                    const wanInterfaces = proposed.wan_interfaces || [];
+                    const wanVarInfo = proposed.wan_variable_info || {};
+                    
+                    if (wanInterfaces.length > 0) {
+                        confirmHtml += `
+                        <div class="confirm-section wan-detection">
+                            <h4>Detected WAN Interfaces (${wanInterfaces.length})</h4>
+                            <div class="config-comparison">
+                        `;
+                        
+                        wanInterfaces.forEach((wan, idx) => {
+                            const varName = `wan${idx + 1}`;
+                            const indicators = (wan.classification_indicators || []).slice(0, 3).join(', ');
+                            const confidence = Math.round((wan.classification_confidence || 0) * 100);
+                            confirmHtml += `
+                            <div class="comparison-item update-item">
+                                <div class="comparison-details">
+                                    <span class="detail-row"><strong>${varName}:</strong> ${wan.name} ${wan.description ? '(' + wan.description + ')' : ''}</span>
+                                    <span class="detail-row secondary">Type: ${wan.port_type || 'unknown'} | Confidence: ${confidence}% | Indicators: ${indicators || 'none'}</span>
+                                </div>
+                            </div>
+                            `;
+                        });
+                        
+                        // Show template variable status
+                        if (wanVarInfo.uses_wan_vars) {
+                            confirmHtml += `
+                            <div class="comparison-item success-item">
+                                <div class="comparison-details">
+                                    <span class="detail-row"><strong>Template Status:</strong> Template already has WAN variables (${wanVarInfo.wan_var_names.join(', ')})</span>
+                                </div>
+                            </div>
+                            `;
+                        } else if (wanVarInfo.needs_new_vars !== undefined) {
+                            if (wanVarInfo.needs_new_vars) {
+                                confirmHtml += `
+                                <div class="comparison-item warning-item">
+                                    <div class="comparison-details">
+                                        <span class="detail-row"><strong>Template Status:</strong> Will add WAN variable port configs to template</span>
+                                    </div>
+                                </div>
+                                `;
+                            } else {
+                                confirmHtml += `
+                                <div class="comparison-item success-item">
+                                    <div class="comparison-details">
+                                        <span class="detail-row"><strong>Template Status:</strong> Template has sufficient WAN variables</span>
+                                    </div>
+                                </div>
+                                `;
+                            }
+                        }
+                        
+                        // Show WAN validation discrepancies
+                        const wanValidation = proposed.wan_validation || {};
+                        if (wanValidation.has_issues) {
+                            confirmHtml += `
+                            <div class="comparison-item error-item">
+                                <div class="comparison-details">
+                                    <span class="detail-row"><strong>Configuration Validation Warnings:</strong></span>
+                                </div>
+                            </div>
+                            `;
+                            
+                            // Show value mismatches between current site vars and proposed
+                            const discrepancies = wanValidation.discrepancies || [];
+                            if (discrepancies.length > 0) {
+                                confirmHtml += `
+                                <div class="comparison-item warning-item">
+                                    <div class="comparison-details">
+                                        <span class="detail-row"><strong>Site Variable Conflicts (will be overwritten):</strong></span>
+                                `;
+                                discrepancies.forEach(d => {
+                                    confirmHtml += `
+                                        <span class="detail-row secondary">
+                                            ${d.variable}: "${d.current}" -> "${d.proposed}"
+                                        </span>
+                                    `;
+                                });
+                                confirmHtml += `
+                                    </div>
+                                </div>
+                                `;
+                            }
+                            
+                            // Show WAN interfaces that need to be added to template
+                            const missingInTemplate = wanValidation.missing_in_template || [];
+                            if (missingInTemplate.length > 0) {
+                                confirmHtml += `
+                                <div class="comparison-item warning-item">
+                                    <div class="comparison-details">
+                                        <span class="detail-row"><strong>Will add to template port_config:</strong> ${missingInTemplate.join(', ')}</span>
+                                    </div>
+                                </div>
+                                `;
+                            }
+                        } else if (wanValidation.proposed_vars && Object.keys(wanValidation.proposed_vars).length > 0) {
+                            confirmHtml += `
+                            <div class="comparison-item success-item">
+                                <div class="comparison-details">
+                                    <span class="detail-row"><strong>Site Variables:</strong> ${Object.keys(wanValidation.proposed_vars).length} variables to set</span>
+                                </div>
+                            </div>
+                            `;
+                        }
+                        
+                        confirmHtml += `
+                            </div>
+                        </div>
+                        `;
                     }
                     
                     confirmHtml += `</div>`; // close confirm-section
@@ -999,6 +1271,7 @@
             const applyData = {
                 device_name: pendingProposal.device_name,
                 gateway_type: pendingProposal.gateway_type,
+                hardware_type: pendingProposal.hardware_type || 'srx',
                 site_name: pendingProposal.site.name,
                 address: pendingProposal.site.address || {},
                 create_site: !pendingProposal.site.exists,
@@ -1024,7 +1297,14 @@
                 pendingProposal = null;
                 
                 if (response.ok) {
-                    showMessage(`Success! ${data.message}\n\nSite ID: ${data.site_id}`, 'success');
+                    let successMsg = `Success! ${data.message}\n\nSite ID: ${data.site_id}`;
+                    
+                    // Show any configuration warnings
+                    if (data.warnings && data.warnings.length > 0) {
+                        successMsg += '\n\n--- WARNINGS ---\n' + data.warnings.join('\n');
+                    }
+                    
+                    showMessage(successMsg, 'success');
                 } else {
                     showMessage('Error: ' + (data.error || 'Unknown error'), 'error');
                 }
@@ -1035,6 +1315,572 @@
             applyConfirmBtn.disabled = false;
             applyConfirmBtn.textContent = 'Confirm & Apply';
         });
+
+        // ==================================================
+        // POWER USER FUNCTIONS - Destructive operations
+        // ==================================================
+        {% if poweruser %}
+        const backupServicePoliciesBtn = document.getElementById('backupServicePoliciesBtn');
+        const restoreFileSelect = document.getElementById('restoreFileSelect');
+        const restoreServicePoliciesBtn = document.getElementById('restoreServicePoliciesBtn');
+        const backupServicesBtn = document.getElementById('backupServicesBtn');
+        const restoreServicesFileSelect = document.getElementById('restoreServicesFileSelect');
+        const restoreServicesBtn = document.getElementById('restoreServicesBtn');
+        const deleteAllServicesBtn = document.getElementById('deleteAllServicesBtn');
+        const backupNetworksBtn = document.getElementById('backupNetworksBtn');
+        const restoreNetworksFileSelect = document.getElementById('restoreNetworksFileSelect');
+        const restoreNetworksBtn = document.getElementById('restoreNetworksBtn');
+        const deleteAllNetworksBtn = document.getElementById('deleteAllNetworksBtn');
+        const unassignAllBtn = document.getElementById('unassignAllBtn');
+        const deleteAllBtn = document.getElementById('deleteAllBtn');
+
+        // Load available service policy backup files on page load
+        async function loadBackupFiles() {
+            try {
+                const response = await fetch('/api/poweruser/list-service-policy-backups');
+                const data = await response.json();
+                
+                if (response.ok && data.files) {
+                    restoreFileSelect.innerHTML = '<option value="">-- Select backup --</option>';
+                    data.files.forEach(file => {
+                        const option = document.createElement('option');
+                        option.value = file.filename;
+                        option.textContent = `${file.filename} (${file.policies_count} policies)`;
+                        restoreFileSelect.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.error('Error loading backup files:', error);
+            }
+        }
+
+        // Load available service backup files on page load
+        async function loadServiceBackupFiles() {
+            try {
+                const response = await fetch('/api/poweruser/list-service-backups');
+                const data = await response.json();
+                
+                if (response.ok && data.files) {
+                    restoreServicesFileSelect.innerHTML = '<option value="">-- Select backup --</option>';
+                    data.files.forEach(file => {
+                        const option = document.createElement('option');
+                        option.value = file.filename;
+                        option.textContent = `${file.filename} (${file.services_count} services)`;
+                        restoreServicesFileSelect.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.error('Error loading service backup files:', error);
+            }
+        }
+        
+        // Load available network backup files on page load
+        async function loadNetworkBackupFiles() {
+            try {
+                const response = await fetch('/api/poweruser/list-network-backups');
+                const data = await response.json();
+                
+                if (response.ok && data.files) {
+                    restoreNetworksFileSelect.innerHTML = '<option value="">-- Select backup --</option>';
+                    data.files.forEach(file => {
+                        const option = document.createElement('option');
+                        option.value = file.filename;
+                        option.textContent = `${file.filename} (${file.networks_count} networks)`;
+                        restoreNetworksFileSelect.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.error('Error loading network backup files:', error);
+            }
+        }
+
+        // Load backup files on page load
+        loadBackupFiles();
+        loadServiceBackupFiles();
+        loadNetworkBackupFiles();
+
+        // Backup Service Policies (non-destructive)
+        if (backupServicePoliciesBtn) {
+            backupServicePoliciesBtn.addEventListener('click', async function() {
+                backupServicePoliciesBtn.disabled = true;
+                backupServicePoliciesBtn.textContent = 'Backing up...';
+                
+                try {
+                    const response = await fetch('/api/poweruser/backup-service-policies', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        let message = 'Backup Service Policies Complete!\n\n';
+                        message += `Policies backed up: ${data.results.policies_count}\n`;
+                        message += `File: ${data.results.filename}`;
+                        showMessage(message, 'success');
+                        // Refresh backup file list
+                        loadBackupFiles();
+                    } else {
+                        showMessage('Error: ' + (data.error || 'Unknown error'), 'error');
+                    }
+                } catch (error) {
+                    showMessage('Error: ' + error.message, 'error');
+                }
+                
+                backupServicePoliciesBtn.disabled = false;
+                backupServicePoliciesBtn.textContent = 'Backup Service Policies';
+            });
+        }
+
+        // Restore Service Policies (destructive - will create/update policies)
+        if (restoreServicePoliciesBtn) {
+            restoreServicePoliciesBtn.addEventListener('click', async function() {
+                const selectedFile = restoreFileSelect.value;
+                if (!selectedFile) {
+                    showMessage('Please select a backup file to restore', 'error');
+                    return;
+                }
+                
+                if (!confirm(`WARNING: This will restore service policies from:\n${selectedFile}\n\nExisting policies with matching names will be UPDATED.\nNew policies will be CREATED.\n\nAre you sure you want to continue?`)) {
+                    return;
+                }
+                
+                const confirmation = prompt('Type CONFIRM to proceed with restoring service policies:');
+                if (confirmation !== 'CONFIRM') {
+                    showMessage('Operation cancelled - confirmation not provided', 'error');
+                    return;
+                }
+                
+                restoreServicePoliciesBtn.disabled = true;
+                restoreServicePoliciesBtn.textContent = 'Restoring...';
+                
+                try {
+                    const response = await fetch('/api/poweruser/restore-service-policies', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ filename: selectedFile, confirmation: 'CONFIRM' })
+                    });
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        let message = 'Restore Service Policies Complete!\n\n';
+                        message += `Policies created: ${data.results.created}\n`;
+                        message += `Policies updated: ${data.results.updated}\n`;
+                        message += `Policies skipped: ${data.results.skipped}`;
+                        if (data.results.errors && data.results.errors.length > 0) {
+                            message += `\n\nErrors:\n${data.results.errors.slice(0, 5).join('\n')}`;
+                            if (data.results.errors.length > 5) {
+                                message += `\n... and ${data.results.errors.length - 5} more`;
+                            }
+                        }
+                        showMessage(message, 'success');
+                    } else {
+                        showMessage('Error: ' + (data.error || 'Unknown error'), 'error');
+                    }
+                } catch (error) {
+                    showMessage('Error: ' + error.message, 'error');
+                }
+                
+                restoreServicePoliciesBtn.disabled = false;
+                restoreServicePoliciesBtn.textContent = 'Restore Service Policies';
+            });
+        }
+
+        // Backup Services (non-destructive)
+        if (backupServicesBtn) {
+            backupServicesBtn.addEventListener('click', async function() {
+                backupServicesBtn.disabled = true;
+                backupServicesBtn.textContent = 'Backing up...';
+                
+                try {
+                    const response = await fetch('/api/poweruser/backup-services', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        let message = 'Backup Services Complete!\n\n';
+                        message += `Services backed up: ${data.results.services_count}\n`;
+                        message += `File: ${data.results.filename}`;
+                        showMessage(message, 'success');
+                        // Refresh service backup file list
+                        loadServiceBackupFiles();
+                    } else {
+                        showMessage('Error: ' + (data.error || 'Unknown error'), 'error');
+                    }
+                } catch (error) {
+                    showMessage('Error: ' + error.message, 'error');
+                }
+                
+                backupServicesBtn.disabled = false;
+                backupServicesBtn.textContent = 'Backup Services';
+            });
+        }
+
+        // Restore Services (destructive - will create/update services)
+        if (restoreServicesBtn) {
+            restoreServicesBtn.addEventListener('click', async function() {
+                const selectedFile = restoreServicesFileSelect.value;
+                if (!selectedFile) {
+                    showMessage('Please select a service backup file to restore', 'error');
+                    return;
+                }
+                
+                if (!confirm(`WARNING: This will restore services from:\n${selectedFile}\n\nExisting services with matching names will be UPDATED.\nNew services will be CREATED.\n\nAre you sure you want to continue?`)) {
+                    return;
+                }
+                
+                const confirmation = prompt('Type CONFIRM to proceed with restoring services:');
+                if (confirmation !== 'CONFIRM') {
+                    showMessage('Operation cancelled - confirmation not provided', 'error');
+                    return;
+                }
+                
+                restoreServicesBtn.disabled = true;
+                restoreServicesBtn.textContent = 'Restoring...';
+                
+                try {
+                    const response = await fetch('/api/poweruser/restore-services', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ filename: selectedFile, confirmation: 'CONFIRM' })
+                    });
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        let message = 'Restore Services Complete!\n\n';
+                        message += `Services created: ${data.results.created}\n`;
+                        message += `Services updated: ${data.results.updated}\n`;
+                        message += `Services skipped: ${data.results.skipped}`;
+                        if (data.results.errors && data.results.errors.length > 0) {
+                            message += `\n\nErrors:\n${data.results.errors.slice(0, 5).join('\n')}`;
+                            if (data.results.errors.length > 5) {
+                                message += `\n... and ${data.results.errors.length - 5} more`;
+                            }
+                        }
+                        showMessage(message, 'success');
+                    } else {
+                        showMessage('Error: ' + (data.error || 'Unknown error'), 'error');
+                    }
+                } catch (error) {
+                    showMessage('Error: ' + error.message, 'error');
+                }
+                
+                restoreServicesBtn.disabled = false;
+                restoreServicesBtn.textContent = 'Restore Services';
+            });
+        }
+
+        // Delete All Services (destructive)
+        if (deleteAllServicesBtn) {
+            deleteAllServicesBtn.addEventListener('click', async function() {
+                if (!confirm('WARNING: This will DELETE ALL SERVICES from the organization.\n\nThis is a destructive operation and cannot be undone!\n\nAre you sure you want to continue?')) {
+                    return;
+                }
+                
+                const confirmation = prompt('Type CONFIRM to proceed with deleting ALL services:');
+                if (confirmation !== 'CONFIRM') {
+                    showMessage('Operation cancelled - confirmation not provided', 'error');
+                    return;
+                }
+                
+                deleteAllServicesBtn.disabled = true;
+                deleteAllServicesBtn.textContent = 'Deleting...';
+                
+                try {
+                    const response = await fetch('/api/poweruser/delete-all-services', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ confirmation: 'CONFIRM' })
+                    });
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        let message = 'Delete All Services Complete!\n\n';
+                        message += `Services deleted: ${data.results.deleted}`;
+                        if (data.results.errors && data.results.errors.length > 0) {
+                            message += `\n\nErrors:\n${data.results.errors.slice(0, 5).join('\n')}`;
+                            if (data.results.errors.length > 5) {
+                                message += `\n... and ${data.results.errors.length - 5} more`;
+                            }
+                        }
+                        showMessage(message, 'success');
+                    } else {
+                        showMessage('Error: ' + (data.error || 'Unknown error'), 'error');
+                    }
+                } catch (error) {
+                    showMessage('Error: ' + error.message, 'error');
+                }
+                
+                deleteAllServicesBtn.disabled = false;
+                deleteAllServicesBtn.textContent = 'Delete All Services';
+            });
+        }
+
+        // Backup Networks (non-destructive)
+        if (backupNetworksBtn) {
+            backupNetworksBtn.addEventListener('click', async function() {
+                backupNetworksBtn.disabled = true;
+                backupNetworksBtn.textContent = 'Backing up...';
+                
+                try {
+                    const response = await fetch('/api/poweruser/backup-networks', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        let message = 'Backup Networks Complete!\n\n';
+                        message += `Networks backed up: ${data.results.networks_count}\n`;
+                        message += `File: ${data.results.filename}`;
+                        showMessage(message, 'success');
+                        // Refresh network backup file list
+                        loadNetworkBackupFiles();
+                    } else {
+                        showMessage('Error: ' + (data.error || 'Unknown error'), 'error');
+                    }
+                } catch (error) {
+                    showMessage('Error: ' + error.message, 'error');
+                }
+                
+                backupNetworksBtn.disabled = false;
+                backupNetworksBtn.textContent = 'Backup Networks';
+            });
+        }
+
+        // Restore Networks (destructive - will create/update networks)
+        if (restoreNetworksBtn) {
+            restoreNetworksBtn.addEventListener('click', async function() {
+                const selectedFile = restoreNetworksFileSelect.value;
+                if (!selectedFile) {
+                    showMessage('Please select a network backup file to restore', 'error');
+                    return;
+                }
+                
+                if (!confirm(`WARNING: This will restore networks from:\n${selectedFile}\n\nExisting networks with matching names will be UPDATED.\nNew networks will be CREATED.\n\nAre you sure you want to continue?`)) {
+                    return;
+                }
+                
+                const confirmation = prompt('Type CONFIRM to proceed with restoring networks:');
+                if (confirmation !== 'CONFIRM') {
+                    showMessage('Operation cancelled - confirmation not provided', 'error');
+                    return;
+                }
+                
+                restoreNetworksBtn.disabled = true;
+                restoreNetworksBtn.textContent = 'Restoring...';
+                
+                try {
+                    const response = await fetch('/api/poweruser/restore-networks', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ filename: selectedFile, confirmation: 'CONFIRM' })
+                    });
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        let message = 'Restore Networks Complete!\n\n';
+                        message += `Networks created: ${data.results.created}\n`;
+                        message += `Networks updated: ${data.results.updated}\n`;
+                        message += `Networks skipped: ${data.results.skipped}`;
+                        if (data.results.errors && data.results.errors.length > 0) {
+                            message += `\n\nErrors:\n${data.results.errors.slice(0, 5).join('\n')}`;
+                            if (data.results.errors.length > 5) {
+                                message += `\n... and ${data.results.errors.length - 5} more`;
+                            }
+                        }
+                        showMessage(message, 'success');
+                    } else {
+                        showMessage('Error: ' + (data.error || 'Unknown error'), 'error');
+                    }
+                } catch (error) {
+                    showMessage('Error: ' + error.message, 'error');
+                }
+                
+                restoreNetworksBtn.disabled = false;
+                restoreNetworksBtn.textContent = 'Restore Networks';
+            });
+        }
+
+        // Delete All Networks (destructive)
+        if (deleteAllNetworksBtn) {
+            deleteAllNetworksBtn.addEventListener('click', async function() {
+                if (!confirm('WARNING: This will DELETE ALL NETWORKS from the organization.\n\nThis is a destructive operation and cannot be undone!\n\nAre you sure you want to continue?')) {
+                    return;
+                }
+                
+                const confirmation = prompt('Type CONFIRM to proceed with deleting ALL networks:');
+                if (confirmation !== 'CONFIRM') {
+                    showMessage('Operation cancelled - confirmation not provided', 'error');
+                    return;
+                }
+                
+                deleteAllNetworksBtn.disabled = true;
+                deleteAllNetworksBtn.textContent = 'Deleting...';
+                
+                try {
+                    const response = await fetch('/api/poweruser/delete-all-networks', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ confirmation: 'CONFIRM' })
+                    });
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        let message = 'Delete All Networks Complete!\n\n';
+                        message += `Networks deleted: ${data.results.deleted}`;
+                        if (data.results.errors && data.results.errors.length > 0) {
+                            message += `\n\nErrors:\n${data.results.errors.slice(0, 5).join('\n')}`;
+                            if (data.results.errors.length > 5) {
+                                message += `\n... and ${data.results.errors.length - 5} more`;
+                            }
+                        }
+                        showMessage(message, 'success');
+                    } else {
+                        showMessage('Error: ' + (data.error || 'Unknown error'), 'error');
+                    }
+                } catch (error) {
+                    showMessage('Error: ' + error.message, 'error');
+                }
+                
+                deleteAllNetworksBtn.disabled = false;
+                deleteAllNetworksBtn.textContent = 'Delete All Networks';
+            });
+        }
+
+        if (unassignAllBtn) {
+            unassignAllBtn.addEventListener('click', async function() {
+                if (!confirm('WARNING: This will unassign ALL gateway templates from ALL sites and devices.\n\nThis is a destructive operation!\n\nAre you sure you want to continue?')) {
+                    return;
+                }
+                
+                const confirmation = prompt('Type CONFIRM to proceed with unassigning all templates:');
+                if (confirmation !== 'CONFIRM') {
+                    showMessage('Operation cancelled - confirmation not provided', 'error');
+                    return;
+                }
+                
+                unassignAllBtn.disabled = true;
+                unassignAllBtn.textContent = 'Working...';
+                
+                try {
+                    const response = await fetch('/api/poweruser/unassign-all-templates', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ confirmation: 'CONFIRM' })
+                    });
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        let message = 'Unassign All Complete!\n\n';
+                        message += `Sites cleared: ${data.results.sites_cleared}\n`;
+                        message += `Profiles cleared: ${data.results.profiles_cleared}`;
+                        if (data.results.errors && data.results.errors.length > 0) {
+                            message += `\n\nErrors:\n${data.results.errors.join('\n')}`;
+                        }
+                        showMessage(message, 'success');
+                    } else {
+                        showMessage('Error: ' + (data.error || 'Unknown error'), 'error');
+                    }
+                } catch (error) {
+                    showMessage('Error: ' + error.message, 'error');
+                }
+                
+                unassignAllBtn.disabled = false;
+                unassignAllBtn.textContent = 'Unassign All Templates';
+            });
+        }
+
+        if (deleteAllBtn) {
+            deleteAllBtn.addEventListener('click', async function() {
+                if (!confirm('WARNING: This will DELETE ALL gateway templates and device profiles!\n\nThis is PERMANENT and cannot be undone!\n\nAre you sure you want to continue?')) {
+                    return;
+                }
+                
+                const confirmation = prompt('Type CONFIRM to proceed with deleting all templates:');
+                if (confirmation !== 'CONFIRM') {
+                    showMessage('Operation cancelled - confirmation not provided', 'error');
+                    return;
+                }
+                
+                deleteAllBtn.disabled = true;
+                deleteAllBtn.textContent = 'Deleting...';
+                
+                try {
+                    const response = await fetch('/api/poweruser/delete-all-templates', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ confirmation: 'CONFIRM' })
+                    });
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        let message = 'Delete All Complete!\n\n';
+                        message += `Templates deleted: ${data.results.templates_deleted}\n`;
+                        message += `Profiles deleted: ${data.results.profiles_deleted}`;
+                        if (data.results.errors && data.results.errors.length > 0) {
+                            message += `\n\nErrors:\n${data.results.errors.join('\n')}`;
+                        }
+                        showMessage(message, 'success');
+                    } else {
+                        showMessage('Error: ' + (data.error || 'Unknown error'), 'error');
+                    }
+                } catch (error) {
+                    showMessage('Error: ' + error.message, 'error');
+                }
+                
+                deleteAllBtn.disabled = false;
+                deleteAllBtn.textContent = 'Delete All Templates';
+            });
+        }
+
+        const unassignTemplatedDevicesBtn = document.getElementById('unassignTemplatedDevicesBtn');
+        if (unassignTemplatedDevicesBtn) {
+            unassignTemplatedDevicesBtn.addEventListener('click', async function() {
+                if (!confirm('WARNING: This will move ALL gateway devices from sites with templates AND devices with hub profiles to UNASSIGNED inventory.\n\nDevices will be removed from their sites but remain in your org.\n\nAre you sure you want to continue?')) {
+                    return;
+                }
+                
+                const confirmation = prompt('Type CONFIRM to proceed with unassigning templated devices:');
+                if (confirmation !== 'CONFIRM') {
+                    showMessage('Operation cancelled - confirmation not provided', 'error');
+                    return;
+                }
+                
+                unassignTemplatedDevicesBtn.disabled = true;
+                unassignTemplatedDevicesBtn.textContent = 'Working...';
+                
+                try {
+                    const response = await fetch('/api/poweruser/unassign-templated-devices', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ confirmation: 'CONFIRM' })
+                    });
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        let message = 'Unassign Templated Devices Complete!\n\n';
+                        message += `Sites scanned: ${data.results.sites_scanned}\n`;
+                        message += `Sites with templates: ${data.results.templated_sites}\n`;
+                        message += `Hub profile devices: ${data.results.hub_devices_found}\n`;
+                        message += `Devices unassigned: ${data.results.devices_unassigned}`;
+                        if (data.results.errors && data.results.errors.length > 0) {
+                            message += `\n\nErrors:\n${data.results.errors.join('\n')}`;
+                        }
+                        showMessage(message, 'success');
+                    } else {
+                        showMessage('Error: ' + (data.error || 'Unknown error'), 'error');
+                    }
+                } catch (error) {
+                    showMessage('Error: ' + error.message, 'error');
+                }
+                
+                unassignTemplatedDevicesBtn.disabled = false;
+                unassignTemplatedDevicesBtn.textContent = 'Unassign Templated Devices';
+            });
+        }
+        {% endif %}
     </script>
 </body>
 </html>

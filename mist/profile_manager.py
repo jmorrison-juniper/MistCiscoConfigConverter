@@ -470,6 +470,200 @@ class MistProfileManager:
             self._logger.error(f"Error unassigning devices from profile: {error}")
             return None
     
+    def add_wan_variable_ports(
+        self,
+        profile_id: str,
+        wan_interfaces: list[dict] | None = None,
+        existing_wan_vars: list[str] | None = None
+    ) -> dict | None:
+        """Add WAN variable port configurations to a hub device profile.
+        
+        Creates port_config entries with keys like "{{wan1}}", "{{wan2_lte}}"
+        that can be resolved using site variables.
+        
+        Note: Hub profiles typically use literal values, but this method
+        supports variable references for consistency with spoke templates.
+        
+        Args:
+            profile_id: ID of the profile to update
+            wan_interfaces: List of WAN interface dicts with keys:
+                - wan_var_name: Variable name (e.g., "wan1", "wan2_lte")
+                - wan_type: "broadband" or "lte"
+                - ip_config_type: "dhcp", "static", "pppoe", "negotiated"
+                - ip_address, subnet_mask, default_gateway: Static IP details
+                - encap_vlan_id: VLAN ID for tagged WAN
+                - shutdown: Admin state
+                - upload_kbps: Upload bandwidth for traffic shaping (0 if not found)
+                - download_kbps: Download bandwidth for traffic shaping (0 if not found)
+                - lte_apn, lte_auth, lte_username, lte_password: LTE settings
+            existing_wan_vars: List of WAN var names already in profile
+        
+        Returns:
+            Updated profile dict on success, None on error.
+        """
+        session = self.connection.session
+        if not session:
+            return None
+        
+        existing_wan_vars = existing_wan_vars or []
+        wan_interfaces = wan_interfaces or []
+        
+        # Build port_config entries for ALL WAN variables
+        port_config: dict[str, Any] = {}
+        updated_vars = []
+        
+        for wan_interface in wan_interfaces:
+            var_name = wan_interface.get("wan_var_name", "")
+            wan_type = wan_interface.get("wan_type", "broadband")
+            ip_config_type = wan_interface.get("ip_config_type", "dhcp") or "dhcp"
+            
+            if var_name:
+                port_key = "{{" + var_name + "}}"
+                
+                # Build ip_config based on parsed config type
+                ip_config: dict[str, Any] = {}
+                
+                if ip_config_type == "static":
+                    ip_config["type"] = "static"
+                    # Use variable references for IP config values
+                    ip_config["ip"] = "{{" + var_name + "_ip}}"
+                    ip_config["netmask"] = "/{{" + var_name + "_subnet}}"
+                    ip_config["gateway"] = "{{" + var_name + "_gateway}}"
+                elif ip_config_type == "pppoe" or ip_config_type == "negotiated":
+                    ip_config["type"] = "pppoe"
+                elif ip_config_type == "dhcp":
+                    ip_config["type"] = "dhcp"
+                else:
+                    ip_config["type"] = "dhcp"  # Default to DHCP
+                
+                # Build port config entry
+                port_entry: dict[str, Any] = {
+                    "usage": "wan",
+                    "name": "{{" + var_name + "_name}}",
+                    "description": "{{" + var_name + "_desc}}",
+                    "aggregated": False,
+                    "redundant": False,
+                    "critical": False,
+                    "wan_type": wan_type,
+                    "ip_config": ip_config,
+                    "disable_autoneg": False,
+                    "wan_source_nat": {
+                        "disabled": False
+                    }
+                }
+                
+                # Add VLAN ID if configured
+                vlan_id = wan_interface.get("encap_vlan_id", 0)
+                if vlan_id and vlan_id > 0:
+                    port_entry["vlan_id"] = "{{" + var_name + "_vlan}}"
+                
+                # Add disabled state if interface is shutdown
+                if wan_interface.get("shutdown", False):
+                    port_entry["disabled"] = True
+                
+                # Always add traffic shaping with variable references
+                # If the site doesn't have the variable, the config won't resolve/activate
+                port_entry["traffic_shaping"] = {
+                    "enabled": True,
+                    "max_tx_kbps": "{{" + var_name + "_upload_kbps}}"
+                }
+                
+                # Add LTE-specific settings
+                if wan_type == "lte":
+                    lte_apn = wan_interface.get("lte_apn", "")
+                    lte_auth = wan_interface.get("lte_auth", "none") or "none"
+                    
+                    if lte_apn:
+                        port_entry["lte_apn"] = "{{" + var_name + "_apn}}"
+                    
+                    if lte_auth and lte_auth != "none":
+                        port_entry["lte_auth"] = lte_auth
+                        if wan_interface.get("lte_username"):
+                            port_entry["lte_username"] = "{{" + var_name + "_user}}"
+                        if wan_interface.get("lte_password"):
+                            port_entry["lte_password"] = "{{" + var_name + "_pass}}"
+                    else:
+                        port_entry["lte_auth"] = "none"
+                    
+                    # LTE typically uses DHCP for IP
+                    port_entry["ip_config"] = {"type": "dhcp"}
+                
+                port_config[port_key] = port_entry
+                updated_vars.append(var_name)
+        
+        if not port_config:
+            self._logger.debug("No WAN interfaces to configure in profile")
+            return None
+        
+        self._logger.info(
+            f"Updating WAN variable ports in profile {profile_id}: {updated_vars}"
+        )
+        
+        try:
+            # First get existing port_config to merge
+            response = mistapi.api.v1.orgs.deviceprofiles.getOrgDeviceProfile(
+                session, self.connection.org_id, profile_id
+            )
+            if response.status_code != 200:
+                self._logger.error(
+                    f"Failed to get profile for port_config merge: {response.status_code}"
+                )
+                return None
+            
+            existing_profile = response.data
+            existing_port_config = existing_profile.get("port_config", {})
+            
+            # Merge new WAN ports with existing config
+            merged_port_config = {**existing_port_config, **port_config}
+            
+            update_data = {"port_config": merged_port_config}
+            
+            response = mistapi.api.v1.orgs.deviceprofiles.updateOrgDeviceProfile(
+                session, self.connection.org_id, profile_id, update_data
+            )
+            if response.status_code == 200:
+                self._logger.info(
+                    f"Profile {profile_id} updated with WAN ports: {list(port_config.keys())}"
+                )
+                return response.data
+            else:
+                self._logger.error(
+                    f"Failed to update profile with WAN ports: {response.status_code}"
+                )
+                return None
+        except Exception as error:
+            self._logger.error(f"Error adding WAN ports to profile: {error}")
+            return None
+
+    def check_profile_wan_variables(self, profile: dict) -> dict:
+        """Check what WAN variable ports exist in a device profile.
+        
+        Args:
+            profile: Device profile dict from Mist
+        
+        Returns:
+            Dict with:
+                - wan_var_names: List of WAN variable names found (e.g., ["wan1", "wan2"])
+                - port_config_keys: List of literal port_config keys (e.g., ["{{wan1}}"])
+        """
+        port_config = profile.get("port_config", {})
+        
+        wan_var_names = []
+        port_config_keys = []
+        
+        for key in port_config.keys():
+            # Check for variable reference pattern {{varname}}
+            if key.startswith("{{") and key.endswith("}}"):
+                var_name = key[2:-2]  # Extract varname from {{varname}}
+                if var_name.startswith("wan"):
+                    wan_var_names.append(var_name)
+                    port_config_keys.append(key)
+        
+        return {
+            "wan_var_names": wan_var_names,
+            "port_config_keys": port_config_keys
+        }
+
     def create_ha_cluster(
         self,
         site_id: str,

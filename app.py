@@ -13,8 +13,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
 from werkzeug.utils import secure_filename
+import mistapi
 
-from parser.cisco_parser import CiscoConfigParser
+from parser.cisco_parser import CiscoConfigParser, classify_interface
 from parser.address_parser import parse_snmp_location, ParsedAddress
 from mist import MistConnection, MistSiteManager, MistTemplateManager, MistProfileManager, MistAuditManager
 from mist.profile_manager import sanitize_hub_profile_name
@@ -170,11 +171,429 @@ def get_theme():
     return theme
 
 
+def is_poweruser():
+    """Check if poweruser mode is enabled via environment variable."""
+    return os.environ.get("POWERUSER", "").lower().strip() == "true"
+
+
+def get_interface_classification_thresholds() -> tuple[float, float]:
+    """Get WAN and LAN classification thresholds from environment.
+    
+    Returns:
+        Tuple of (wan_threshold, lan_threshold)
+        - wan_threshold: Score above this = WAN (default 0.3)
+        - lan_threshold: Score below this = LAN (default -0.3)
+    """
+    wan_threshold = float(os.environ.get("INTERFACE_WAN_THRESHOLD", "0.3"))
+    lan_threshold = float(os.environ.get("INTERFACE_LAN_THRESHOLD", "-0.3"))
+    return wan_threshold, lan_threshold
+
+
+def extract_wan_interfaces(parsed_data: dict, min_confidence: float = 0.7) -> list[dict]:
+    """Extract detected WAN interfaces from parsed config with cellular expansion.
+    
+    Filters interfaces classified as WAN with confidence above threshold.
+    Cellular interfaces generate TWO reservations each:
+      1. A modem GigE slot (for external 3rd-party cellular modem)
+      2. An LTE slot (for built-in Juniper LTE interface)
+    
+    Ordering:
+      1. GigE WAN interfaces (regular WAN)
+      2. (Future: GigE LAN interfaces)
+      3. Cellular modem GigE slots
+      4. Cellular LTE slots (with _lte suffix)
+    
+    Args:
+        parsed_data: Parsed config dictionary with interfaces list
+        min_confidence: Minimum classification_confidence to include (default 0.7)
+    
+    Returns:
+        List of WAN interface dicts sorted by category, containing:
+        - name: Original Cisco interface name
+        - description: Interface description if set
+        - wan_score: Classification score
+        - classification_confidence: Confidence level
+        - classification_indicators: List of factors contributing to classification
+        - ip_address: IP address if configured
+        - subnet_mask: Subnet mask for static IPs
+        - ip_config_type: static, dhcp, pppoe, or negotiated
+        - encap_vlan_id: VLAN ID for subinterface encapsulation
+        - default_gateway: Next-hop gateway for this interface
+        - shutdown: True if interface is administratively down
+        - port_type: Interface port type (routed, cellular, etc.)
+        - upload_kbps: Upload bandwidth for traffic shaping (from config, tunnel, or description)
+        - download_kbps: Download bandwidth for traffic shaping
+        - bandwidth_source: Where bandwidth was derived from (config, tunnel:X, tunnel_desc:X, description)
+        - wan_var_name: Variable name for site vars (e.g., "wan1", "wan2_lte")
+        - wan_type: "broadband" or "lte"
+        - is_cellular: True if this is a cellular-derived interface
+        - cellular_slot: For cellular, indicates "modem_gig" or "lte"
+        - cellular_profile_id: ID of cellular profile attached to this interface
+        - lte_apn: APN name from cellular profile (if applicable)
+        - lte_auth: Authentication type (none, chap, pap)
+        - lte_username: APN username
+        - lte_password: APN password (decoded)
+    """
+    interfaces = parsed_data.get("interfaces", [])
+    static_routes = parsed_data.get("static_routes", [])
+    cellular_profiles = parsed_data.get("cellular_profiles", [])
+    
+    # Build lookup of profile_id -> profile data
+    profile_lookup: dict[int, dict] = {}
+    for profile in cellular_profiles:
+        profile_id = profile.get("profile_id", 0)
+        if profile_id > 0:
+            profile_lookup[profile_id] = profile
+    
+    # Build a lookup of interface -> default gateway from static routes
+    # Default route (0.0.0.0/0) with interface hint maps gateway to that interface
+    interface_gateways: dict[str, str] = {}
+    for route in static_routes:
+        if route.get("destination") == "0.0.0.0":
+            next_hop = route.get("next_hop", "")
+            route_interface = route.get("interface", "")
+            if route_interface and next_hop:
+                interface_gateways[route_interface] = next_hop
+            elif next_hop:
+                # Default route without explicit interface - try to match by subnet
+                # Store for later matching
+                interface_gateways["_default"] = next_hop
+    
+    # Separate GigE WAN from Cellular
+    gige_wan = []
+    cellular_wan = []
+    
+    for interface in interfaces:
+        if interface.get("interface_role") == "wan":
+            confidence = interface.get("classification_confidence", 0)
+            if confidence >= min_confidence:
+                name = interface.get("name", "")
+                port_type = interface.get("port_type", "")
+                
+                # Determine default gateway for this interface
+                gateway = interface_gateways.get(name, "")
+                if not gateway and "_default" in interface_gateways:
+                    gateway = interface_gateways["_default"]
+                
+                # Get cellular profile data if applicable
+                cellular_profile_id = interface.get("cellular_profile_id", 0)
+                lte_apn = ""
+                lte_auth = "none"
+                lte_username = ""
+                lte_password = ""
+                
+                if cellular_profile_id > 0 and cellular_profile_id in profile_lookup:
+                    profile = profile_lookup[cellular_profile_id]
+                    lte_apn = profile.get("apn", "")
+                    lte_auth = profile.get("authentication", "none") or "none"
+                    lte_username = profile.get("username", "")
+                    lte_password = profile.get("password", "")
+                
+                # Get effective bandwidth (prefer explicit, fall back to derived)
+                # Use upload speed for traffic shaping (max_tx_kbps)
+                upload_kbps = interface.get("upload_kbps", 0)
+                download_kbps = interface.get("download_kbps", 0)
+                derived_upload_kbps = interface.get("derived_upload_kbps", 0)
+                derived_download_kbps = interface.get("derived_download_kbps", 0)
+                
+                # Effective speeds: prefer explicit, fall back to derived
+                effective_upload = upload_kbps if upload_kbps > 0 else derived_upload_kbps
+                effective_download = download_kbps if download_kbps > 0 else derived_download_kbps
+                bandwidth_source = interface.get("bandwidth_source", "")
+                
+                entry = {
+                    "name": name,
+                    "description": interface.get("description", ""),
+                    "wan_score": interface.get("wan_score", 0),
+                    "classification_confidence": confidence,
+                    "classification_indicators": interface.get("classification_indicators", []),
+                    "ip_address": interface.get("ip_address", ""),
+                    "subnet_mask": interface.get("subnet_mask", ""),
+                    "ip_config_type": interface.get("ip_config_type", "") or "static",
+                    "encap_vlan_id": interface.get("encap_vlan_id", 0),
+                    "default_gateway": gateway,
+                    "shutdown": interface.get("shutdown", False),
+                    "port_type": port_type,
+                    # Bandwidth for traffic shaping (effective = explicit or derived)
+                    "upload_kbps": effective_upload,
+                    "download_kbps": effective_download,
+                    "bandwidth_source": bandwidth_source,
+                    # Cellular profile data
+                    "cellular_profile_id": cellular_profile_id,
+                    "lte_apn": lte_apn,
+                    "lte_auth": lte_auth,
+                    "lte_username": lte_username,
+                    "lte_password": lte_password
+                }
+                
+                if port_type == "cellular" or name.lower().startswith("cellular"):
+                    cellular_wan.append(entry)
+                else:
+                    gige_wan.append(entry)
+    
+    # Sort GigE WAN by wan_score descending
+    gige_wan.sort(key=lambda x: x.get("wan_score", 0), reverse=True)
+    
+    # Sort Cellular by name (to keep 0/2/0 before 0/2/1)
+    cellular_wan.sort(key=lambda x: x.get("name", ""))
+    
+    # Build final ordered list with WAN variable assignments
+    # Order: GigE WAN -> (future LAN) -> Cellular modem GigE -> Cellular LTE
+    result = []
+    wan_index = 1
+    
+    # 1. GigE WAN interfaces
+    for interface in gige_wan:
+        interface["wan_var_name"] = f"wan{wan_index}"
+        interface["wan_type"] = "broadband"
+        interface["is_cellular"] = False
+        interface["cellular_slot"] = None
+        result.append(interface)
+        wan_index += 1
+    
+    # (Future: LAN interfaces would go here)
+    
+    # 3. Cellular modem GigE slots (external 3rd-party modem)
+    for interface in cellular_wan:
+        modem_entry = interface.copy()
+        modem_entry["wan_var_name"] = f"wan{wan_index}"
+        modem_entry["wan_type"] = "broadband"  # External modem uses GigE
+        modem_entry["is_cellular"] = True
+        modem_entry["cellular_slot"] = "modem_gig"
+        modem_entry["description"] = f"{interface.get('description', '')} (External Modem GigE)".strip()
+        result.append(modem_entry)
+        wan_index += 1
+    
+    # 4. Cellular LTE slots (built-in Juniper LTE)
+    for interface in cellular_wan:
+        lte_entry = interface.copy()
+        lte_entry["wan_var_name"] = f"wan{wan_index}_lte"
+        lte_entry["wan_type"] = "lte"
+        lte_entry["is_cellular"] = True
+        lte_entry["cellular_slot"] = "lte"
+        lte_entry["description"] = f"{interface.get('description', '')} (Built-in LTE)".strip()
+        result.append(lte_entry)
+        wan_index += 1
+    
+    return result
+
+
+def check_template_wan_variables(template: dict) -> dict:
+    """Check if gateway template uses WAN interface variables.
+    
+    Examines port_config keys for {{wan1}}, {{wan2}}, etc. variable references.
+    
+    Args:
+        template: Gateway template dictionary from Mist API
+    
+    Returns:
+        Dict with:
+        - uses_wan_vars: bool - True if template has {{wanN}} variables
+        - wan_var_names: list - Variable names found (e.g., ["wan1", "wan2"])
+        - port_config_keys: list - All port_config keys in template
+    """
+    port_config = template.get("port_config", {})
+    port_keys = list(port_config.keys())
+    
+    # Find {{wanN}} patterns in port config keys
+    import re
+    wan_pattern = re.compile(r"\{\{(wan\d+(?:_lte)?)\}\}")
+    wan_var_names = []
+    
+    for key in port_keys:
+        matches = wan_pattern.findall(key)
+        wan_var_names.extend(matches)
+    
+    # Also check inside port config values for WAN variable references
+    for port_key, port_value in port_config.items():
+        if isinstance(port_value, dict):
+            # Check description, ip_config fields, etc.
+            for field_key, field_value in port_value.items():
+                if isinstance(field_value, str):
+                    matches = wan_pattern.findall(field_value)
+                    wan_var_names.extend(matches)
+    
+    # Remove duplicates and sort
+    wan_var_names = sorted(set(wan_var_names))
+    
+    return {
+        "uses_wan_vars": len(wan_var_names) > 0,
+        "wan_var_names": wan_var_names,
+        "port_config_keys": port_keys
+    }
+
+
+def validate_wan_configuration(
+    template: dict | None,
+    existing_site: dict | None,
+    wan_interfaces: list[dict]
+) -> dict:
+    """Validate WAN configuration between template, site, and parsed config.
+    
+    Compares:
+    - What the template expects (port_config variable references)
+    - What the site currently has (site variables)
+    - What we're about to set from the parsed Cisco config
+    
+    Args:
+        template: Gateway template dict (or None if not exists)
+        existing_site: Site dict with vars (or None if new site)
+        wan_interfaces: List of WAN interface dicts from parsed config
+    
+    Returns:
+        Dict with validation results:
+        - template_expected_vars: Variables the template references
+        - site_current_vars: Current site variable values
+        - proposed_vars: What we're about to set
+        - discrepancies: List of {var_name, issue, current, proposed}
+        - missing_in_template: Vars we need but template doesn't have
+        - missing_site_vars: Vars template needs but site doesn't have
+    """
+    import re
+    
+    discrepancies = []
+    missing_in_template = []
+    missing_site_vars = []
+    
+    # Build expected template variables from port_config
+    template_expected_vars = set()
+    if template:
+        port_config = template.get("port_config", {})
+        var_pattern = re.compile(r"\{\{(\w+)\}\}")
+        
+        # Check port_config keys and all nested values
+        def extract_vars(obj):
+            if isinstance(obj, str):
+                return var_pattern.findall(obj)
+            elif isinstance(obj, dict):
+                vars_found = []
+                for key, value in obj.items():
+                    vars_found.extend(var_pattern.findall(key))
+                    vars_found.extend(extract_vars(value))
+                return vars_found
+            elif isinstance(obj, list):
+                vars_found = []
+                for item in obj:
+                    vars_found.extend(extract_vars(item))
+                return vars_found
+            return []
+        
+        for key in port_config:
+            template_expected_vars.update(var_pattern.findall(key))
+            template_expected_vars.update(extract_vars(port_config[key]))
+    
+    # Get current site variables
+    site_current_vars = {}
+    if existing_site:
+        site_current_vars = existing_site.get("vars", {}) or {}
+    
+    # Build proposed variables from parsed WAN interfaces
+    proposed_vars = {}
+    for interface in wan_interfaces:
+        var_name = interface.get("wan_var_name", "")
+        if not var_name:
+            continue
+        
+        interface_name = interface.get("name", "")
+        wan_type = interface.get("wan_type", "broadband")
+        
+        # Base variable: interface name
+        if interface_name:
+            proposed_vars[var_name] = interface_name
+        
+        # Vanity name
+        var_name_clean = var_name.replace("_lte", "")
+        port_number = "".join(c for c in var_name_clean if c.isdigit()) or "1"
+        if wan_type == "lte":
+            proposed_vars[f"{var_name}_name"] = f"LTE {port_number}"
+        else:
+            proposed_vars[f"{var_name}_name"] = f"WAN {port_number}"
+        
+        # Description
+        cisco_desc = interface.get("description", "")
+        proposed_vars[f"{var_name}_desc"] = cisco_desc if cisco_desc else interface_name
+        
+        # IP config details
+        ip_address = interface.get("ip_address", "")
+        if ip_address:
+            proposed_vars[f"{var_name}_ip"] = ip_address
+        
+        subnet_mask = interface.get("subnet_mask", "")
+        if subnet_mask:
+            proposed_vars[f"{var_name}_subnet"] = subnet_mask
+        
+        default_gateway = interface.get("default_gateway", "")
+        if default_gateway:
+            proposed_vars[f"{var_name}_gateway"] = default_gateway
+        
+        vlan_id = interface.get("encap_vlan_id", 0)
+        if vlan_id and vlan_id > 0:
+            proposed_vars[f"{var_name}_vlan"] = str(vlan_id)
+        
+        ip_config_type = interface.get("ip_config_type", "")
+        if ip_config_type:
+            proposed_vars[f"{var_name}_type"] = ip_config_type
+        
+        # LTE-specific
+        if wan_type == "lte":
+            lte_apn = interface.get("lte_apn", "")
+            if lte_apn:
+                proposed_vars[f"{var_name}_apn"] = lte_apn
+            
+            lte_auth = interface.get("lte_auth", "")
+            if lte_auth:
+                proposed_vars[f"{var_name}_auth"] = lte_auth
+            
+            lte_username = interface.get("lte_username", "")
+            if lte_username:
+                proposed_vars[f"{var_name}_user"] = lte_username
+            
+            lte_password = interface.get("lte_password", "")
+            if lte_password:
+                proposed_vars[f"{var_name}_pass"] = lte_password
+    
+    # Find discrepancies between current site vars and proposed
+    for var_name, proposed_value in proposed_vars.items():
+        current_value = site_current_vars.get(var_name)
+        if current_value is not None and str(current_value) != str(proposed_value):
+            discrepancies.append({
+                "variable": var_name,
+                "issue": "value_mismatch",
+                "current": str(current_value),
+                "proposed": str(proposed_value)
+            })
+    
+    # Check if template has ports for all our WAN interfaces
+    if template:
+        template_wan_vars = {v for v in template_expected_vars 
+                           if v.startswith("wan") and not "_" in v}
+        proposed_wan_vars = {v for v in proposed_vars.keys() 
+                           if v.startswith("wan") and not "_" in v}
+        
+        missing_in_template = list(proposed_wan_vars - template_wan_vars)
+        
+        # Check if site is missing vars that template expects
+        for var in template_expected_vars:
+            if var not in site_current_vars and var not in proposed_vars:
+                missing_site_vars.append(var)
+    
+    return {
+        "template_expected_vars": sorted(template_expected_vars),
+        "site_current_vars": site_current_vars,
+        "proposed_vars": proposed_vars,
+        "discrepancies": discrepancies,
+        "missing_in_template": sorted(missing_in_template),
+        "missing_site_vars": sorted(missing_site_vars),
+        "has_issues": len(discrepancies) > 0 or len(missing_in_template) > 0
+    }
+
+
 @app.route("/")
 def index():
     """Main page - config upload interface."""
     theme = get_theme()
-    return render_template("index.html", theme=theme)
+    poweruser = is_poweruser()
+    return render_template("index.html", theme=theme, poweruser=poweruser)
 
 
 @app.route("/health")
@@ -289,6 +708,7 @@ def convert_config():
     Accepts:
     - selected_file: filename from input directory
     - gateway_type: 'branch', 'hub', or 'standalone'
+    - hardware_type: 'srx' or 'ssr' (default: 'srx')
     
     Returns proposed changes including site lookup/creation plan.
     """
@@ -299,6 +719,11 @@ def convert_config():
     gateway_type = request.form.get("gateway_type", "").lower()
     if gateway_type not in ["branch", "hub", "standalone"]:
         return jsonify({"error": "Gateway type must be 'branch', 'hub', or 'standalone'"}), 400
+    
+    # Get hardware type (SRX or SSR)
+    hardware_type = request.form.get("hardware_type", "srx").lower()
+    if hardware_type not in ["srx", "ssr"]:
+        hardware_type = "srx"  # Default to SRX
     
     # Method 1: File selected from input directory
     if request.form.get("selected_file"):
@@ -331,6 +756,12 @@ def convert_config():
     # Parse the config
     parser = CiscoConfigParser(config_content)
     parsed_data = parser.parse()
+    
+    # Classify interfaces as WAN or LAN
+    wan_threshold, lan_threshold = get_interface_classification_thresholds()
+    for interface in parser.interfaces:
+        classify_interface(interface, wan_threshold, lan_threshold)
+    
     result = parser.to_dict()
     
     logger.info(f"Parsed config: {result['summary']['total_lines']} lines")
@@ -358,6 +789,7 @@ def convert_config():
     # Check for existing template/profile and compare config
     template_comparison = None
     template_info = None
+    template = None
     
     if gateway_type == "branch":
         template = get_template_manager().find_by_name(
@@ -414,10 +846,64 @@ def convert_config():
                 "exists": False
             }
     
+    # Extract WAN interfaces with high confidence
+    wan_interfaces = extract_wan_interfaces(result, min_confidence=0.7)
+    
+    # Check template for WAN variable usage
+    wan_variable_info = None
+    if gateway_type in ("branch", "standalone") and template_info and template_info.get("exists"):
+        # Load full template to check port_config
+        template_id = template_info.get("id")
+        if gateway_type == "branch":
+            template = get_template_manager().find_by_name(
+                get_template_manager().branch_template_name
+            )
+        else:
+            template = get_template_manager().find_by_name(
+                get_template_manager().standalone_template_name
+            )
+        if template:
+            wan_variable_info = check_template_wan_variables(template)
+            # Add detected WAN interface count to var info
+            wan_variable_info["detected_wan_count"] = len(wan_interfaces)
+            wan_variable_info["detected_wan_interfaces"] = [
+                w.get("name") for w in wan_interfaces
+            ]
+            # Determine if new vars need to be created
+            existing_wan_vars = len(wan_variable_info.get("wan_var_names", []))
+            wan_variable_info["needs_new_vars"] = len(wan_interfaces) > existing_wan_vars
+    
+    # Validate WAN configuration between template, site, and parsed config
+    wan_validation = None
+    if gateway_type in ("branch", "standalone"):
+        wan_validation = validate_wan_configuration(
+            template,
+            existing_site,
+            wan_interfaces
+        )
+    
+    # Collect configuration warnings for preview
+    preview_warnings: list[str] = []
+    
+    # Check for hub gateway using DHCP (not recommended for VPN stability)
+    if gateway_type == "hub" and wan_interfaces:
+        dhcp_wan_interfaces = [
+            w.get("name", "Unknown") for w in wan_interfaces
+            if w.get("ip_config_type", "").lower() == "dhcp"
+        ]
+        if dhcp_wan_interfaces:
+            warning_msg = (
+                f"Hub gateway WAN interfaces using DHCP: {', '.join(dhcp_wan_interfaces)}. "
+                "Static IP is recommended for hub gateways to ensure stable VPN endpoint for spokes."
+            )
+            preview_warnings.append(warning_msg)
+    
     # Build proposed changes
     proposed = {
         "gateway_type": gateway_type,
+        "hardware_type": hardware_type,
         "device_name": device_name,
+        "config_warnings": preview_warnings,
         "site": {
             "exists": existing_site is not None,
             "name": device_name,
@@ -443,6 +929,9 @@ def convert_config():
         },
         "template_info": template_info,
         "template_comparison": template_comparison,
+        "wan_interfaces": wan_interfaces,
+        "wan_variable_info": wan_variable_info,
+        "wan_validation": wan_validation,
         "parsed_data": result
     }
     
@@ -460,6 +949,7 @@ def apply_config():
     Accepts JSON body with:
     - device_name: hostname from config
     - gateway_type: 'branch', 'hub', or 'standalone'
+    - hardware_type: 'srx' or 'ssr' (default: srx)
     - site_name: name for the site
     - address: object with street, city, state, zip_code, country_code, timezone
     - create_site: boolean - whether to create new site
@@ -474,6 +964,7 @@ def apply_config():
     
     device_name = data.get("device_name", "")
     gateway_type = data.get("gateway_type", "")
+    hardware_type = data.get("hardware_type", "srx").lower()  # SRX or SSR
     site_name = data.get("site_name", device_name)
     address_data = data.get("address", {})
     create_site_flag = data.get("create_site", False)
@@ -484,6 +975,10 @@ def apply_config():
     override_ntp = data.get("override_ntp", False)  # Override template NTP at device level
     override_dns = data.get("override_dns", False)  # Override template DNS at device level
     override_syslog = data.get("override_syslog", False)  # Override template syslog at device level
+    
+    # Validate hardware_type
+    if hardware_type not in ["srx", "ssr"]:
+        hardware_type = "srx"  # Default to SRX
     
     if not device_name:
         return jsonify({"error": "device_name is required"}), 400
@@ -531,45 +1026,72 @@ def apply_config():
     syslog_servers = [s for s in syslog_servers if s]  # Remove empty strings
     
     dns_servers: list[str] = parsed_data.get("dns", {}).get("servers", [])
+    dns_domain_name: str = parsed_data.get("dns", {}).get("domain_name", "")
+    
+    # Extract SNMP config
+    snmp_config = parsed_data.get("snmp", {})
+    snmp_community_strings: list[dict] = snmp_config.get("community_strings", [])
+    snmp_contact: str = snmp_config.get("contact", "")
+    snmp_trap_hosts: list[dict] = snmp_config.get("trap_hosts", [])
+    # Note: snmp.location is used for address parsing, not passed to SNMP config
+    
+    # Extract TACACS config
+    tacacs_config = parsed_data.get("tacacs", {})
+    tacacs_servers: list[dict] = tacacs_config.get("servers", [])
+    tacacs_global_key: str = tacacs_config.get("key", "")
+    tacacs_global_timeout: int = tacacs_config.get("timeout", 5)
+    
+    # Extract local accounts (only those with decodable passwords)
+    local_accounts: list[dict] = parsed_data.get("local_accounts", [])
+    decodable_accounts = [a for a in local_accounts if a.get("is_decodable")]
+    
+    # Extract WAN interfaces with high confidence for site variables
+    wan_interface_list = extract_wan_interfaces(parsed_data, min_confidence=0.7)
+    # Build dict of wan_var_name -> interface_name for site variables
+    wan_interface_vars: dict[str, str] = {
+        w.get("wan_var_name", ""): w.get("name", "") 
+        for w in wan_interface_list 
+        if w.get("wan_var_name") and w.get("name")
+    }
+    if wan_interface_vars:
+        logger.info(f"Detected WAN interfaces: {wan_interface_vars}")
+    
+    # Collect configuration warnings
+    config_warnings: list[str] = []
+    
+    # Check for hub gateway using DHCP (not recommended for VPN stability)
+    if gateway_type == "hub" and wan_interface_list:
+        dhcp_wan_interfaces = [
+            w.get("name", "Unknown") for w in wan_interface_list
+            if w.get("ip_config_type", "").lower() == "dhcp"
+        ]
+        if dhcp_wan_interfaces:
+            warning_msg = (
+                f"Hub gateway WAN interfaces using DHCP: {', '.join(dhcp_wan_interfaces)}. "
+                "Static IP is recommended for hub gateways to ensure stable VPN endpoint for spokes."
+            )
+            config_warnings.append(warning_msg)
+            logger.warning(warning_msg)
     
     if gateway_type == "branch":
         # Branch gateways use gateway template (type=spoke) attached to site
-        branch_template, branch_template_created = get_template_manager().get_or_create_branch_template(
-            ntp_servers=ntp_servers,
-            dns_servers=dns_servers,
-            syslog_servers=syslog_servers
-        )
+        # NTP/DNS values go to site variables, syslog goes to site settings
+        branch_template, branch_template_created = get_template_manager().get_or_create_branch_template()
         if branch_template:
             gatewaytemplate_id = branch_template.get("id")
             logger.info(f"Using branch gateway template: {branch_template.get('name')} (ID: {gatewaytemplate_id}) {'(newly created)' if branch_template_created else '(existing)'}")
             
-            # If existing template has empty values but Cisco config has values, update template
-            if not branch_template_created:
-                template_ntp = branch_template.get("ntp_servers") or []
-                template_dns = branch_template.get("dns_servers") or []
-                template_syslog_cfg = branch_template.get("remote_syslog") or {}
-                template_syslog = template_syslog_cfg.get("servers") or []
-                
-                update_ntp = ntp_servers if not template_ntp and ntp_servers else None
-                update_dns = dns_servers if not template_dns and dns_servers else None
-                update_syslog = syslog_servers if not template_syslog and syslog_servers else None
-                
-                if update_ntp or update_dns or update_syslog:
-                    update_types = []
-                    if update_ntp:
-                        update_types.append("NTP")
-                    if update_dns:
-                        update_types.append("DNS")
-                    if update_syslog:
-                        update_types.append("Syslog")
-                    logger.info(f"Updating branch template with Cisco {', '.join(update_types)} values")
-                    if gatewaytemplate_id:
-                        get_template_manager().update(
-                            gatewaytemplate_id,
-                            ntp_servers=update_ntp,
-                            dns_servers=update_dns,
-                            syslog_servers=update_syslog
-                        )
+            # Check if template needs WAN variable ports
+            if wan_interface_vars and gatewaytemplate_id:
+                wan_var_check = check_template_wan_variables(branch_template)
+                existing_wan_vars = wan_var_check.get("wan_var_names", [])
+                # Always update template port_config to ensure name/description are set
+                logger.info(f"Updating template WAN ports (existing: {len(existing_wan_vars)}, detected: {len(wan_interface_vars)})")
+                get_template_manager().add_wan_variable_ports(
+                    gatewaytemplate_id,
+                    wan_interfaces=wan_interface_list,
+                    existing_wan_vars=existing_wan_vars
+                )
         else:
             logger.warning("Could not get/create branch gateway template, continuing without it")
     
@@ -616,48 +1138,40 @@ def apply_config():
                             dns_servers=update_dns,
                             syslog_servers=update_syslog
                         )
+            
+            # Add WAN port configuration to hub profile
+            if wan_interface_vars and hub_profile_id:
+                wan_var_check = get_profile_manager().check_profile_wan_variables(hub_profile)
+                existing_wan_vars = wan_var_check.get("wan_var_names", [])
+                logger.info(f"Updating hub profile WAN ports (existing: {len(existing_wan_vars)}, detected: {len(wan_interface_vars)})")
+                get_profile_manager().add_wan_variable_ports(
+                    hub_profile_id,
+                    wan_interfaces=wan_interface_list,
+                    existing_wan_vars=existing_wan_vars
+                )
         else:
             hub_profile_created = False
             logger.warning("Could not get/create hub device profile, continuing without it")
     
     elif gateway_type == "standalone":
         # Standalone gateways use gateway template (type=standalone) attached to site
-        standalone_template, standalone_template_created = get_template_manager().get_or_create_standalone_template(
-            ntp_servers=ntp_servers,
-            dns_servers=dns_servers,
-            syslog_servers=syslog_servers
-        )
+        # NTP/DNS values go to site variables, syslog goes to site settings
+        standalone_template, standalone_template_created = get_template_manager().get_or_create_standalone_template()
         if standalone_template:
             gatewaytemplate_id = standalone_template.get("id")
             logger.info(f"Using standalone gateway template: {standalone_template.get('name')} (ID: {gatewaytemplate_id}) {'(newly created)' if standalone_template_created else '(existing)'}")
             
-            # If existing template has empty values but Cisco config has values, update template
-            if not standalone_template_created:
-                template_ntp = standalone_template.get("ntp_servers") or []
-                template_dns = standalone_template.get("dns_servers") or []
-                template_syslog_cfg = standalone_template.get("remote_syslog") or {}
-                template_syslog = template_syslog_cfg.get("servers") or []
-                
-                update_ntp = ntp_servers if not template_ntp and ntp_servers else None
-                update_dns = dns_servers if not template_dns and dns_servers else None
-                update_syslog = syslog_servers if not template_syslog and syslog_servers else None
-                
-                if update_ntp or update_dns or update_syslog:
-                    update_types = []
-                    if update_ntp:
-                        update_types.append("NTP")
-                    if update_dns:
-                        update_types.append("DNS")
-                    if update_syslog:
-                        update_types.append("Syslog")
-                    logger.info(f"Updating standalone template with Cisco {', '.join(update_types)} values")
-                    if gatewaytemplate_id:
-                        get_template_manager().update(
-                            gatewaytemplate_id,
-                            ntp_servers=update_ntp,
-                            dns_servers=update_dns,
-                            syslog_servers=update_syslog
-                        )
+            # Check if template needs WAN variable ports
+            if wan_interface_vars and gatewaytemplate_id:
+                wan_var_check = check_template_wan_variables(standalone_template)
+                existing_wan_vars = wan_var_check.get("wan_var_names", [])
+                # Always update template port_config to ensure name/description are set
+                logger.info(f"Updating template WAN ports (existing: {len(existing_wan_vars)}, detected: {len(wan_interface_vars)})")
+                get_template_manager().add_wan_variable_ports(
+                    gatewaytemplate_id,
+                    wan_interfaces=wan_interface_list,
+                    existing_wan_vars=existing_wan_vars
+                )
         else:
             logger.warning("Could not get/create standalone gateway template, continuing without it")
     
@@ -717,6 +1231,83 @@ def apply_config():
             logger.info(f"Updated existing site with address data and template")
         else:
             logger.warning(f"Could not update site")
+    
+    # Store NTP/DNS/Syslog/WAN as site variables for branch and standalone gateways
+    # Hub gateways store values in the device profile instead
+    # DNS suffix only applies to SRX gateways (not SSR)
+    dns_suffix: list[str] = []
+    if hardware_type == "srx" and dns_domain_name:
+        dns_suffix = [dns_domain_name]
+    
+    if gateway_type in ("branch", "standalone") and site_id:
+        # Update site with NTP/DNS/Syslog/WAN variables and DNS suffix
+        # Pass full wan_interface_list for detailed site variable creation
+        if ntp_servers or dns_servers or syslog_servers or dns_suffix or wan_interface_list:
+            vars_result = get_site_manager().update_site_variables(
+                site_id,
+                ntp_servers=ntp_servers,
+                dns_servers=dns_servers,
+                syslog_servers=syslog_servers,
+                dns_suffix=dns_suffix,
+                wan_interfaces=wan_interface_list
+            )
+            if vars_result:
+                var_types = []
+                if ntp_servers:
+                    var_types.append("NTP")
+                if dns_servers:
+                    var_types.append("DNS")
+                if syslog_servers:
+                    var_types.append("Syslog")
+                if dns_suffix:
+                    var_types.append("DNS suffix")
+                if wan_interface_list:
+                    var_types.append(f"WAN ({len(wan_interface_list)} interfaces)")
+                logger.info(f"Updated site variables: {', '.join(var_types)}")
+            else:
+                logger.warning("Could not update site variables")
+    
+    # Configure SNMP and TACACS at site level (applies to all gateway types with a site)
+    if site_id:
+        # Update SNMP configuration
+        if snmp_community_strings or snmp_contact or snmp_trap_hosts:
+            snmp_result = get_site_manager().update_site_snmp(
+                site_id,
+                community_strings=snmp_community_strings,
+                contact=snmp_contact,
+                trap_hosts=snmp_trap_hosts
+            )
+            if snmp_result:
+                logger.info("Updated site SNMP configuration")
+            else:
+                logger.warning("Could not update site SNMP configuration")
+        
+        # Update TACACS configuration
+        if tacacs_servers:
+            tacacs_result = get_site_manager().update_site_tacacs(
+                site_id,
+                tacacs_servers=tacacs_servers,
+                global_key=tacacs_global_key,
+                global_timeout=tacacs_global_timeout
+            )
+            if tacacs_result:
+                logger.info("Updated site TACACS configuration")
+            else:
+                logger.warning("Could not update site TACACS configuration")
+        
+        # Update local accounts (only those with decodable passwords)
+        if decodable_accounts:
+            accounts_result = get_site_manager().update_site_local_accounts(
+                site_id,
+                local_accounts=decodable_accounts
+            )
+            if accounts_result:
+                logger.info(
+                    f"Updated site local accounts: "
+                    f"{[a.get('username') for a in decodable_accounts]}"
+                )
+            else:
+                logger.warning("Could not update site local accounts")
     
     # For standalone and branch modes: unassign devices from any existing hub profile
     # This ensures clean slate when switching away from hub mode
@@ -1009,6 +1600,10 @@ def apply_config():
     if verification_data:
         response_data["verification"] = verification_data
     
+    # Add config warnings if any
+    if config_warnings:
+        response_data["warnings"] = config_warnings
+    
     if gatewaytemplate_id:
         response_data["gatewaytemplate_id"] = gatewaytemplate_id
         response_data["gatewaytemplate_name"] = BRANCH_GATEWAY_TEMPLATE_NAME
@@ -1132,6 +1727,12 @@ def display_config():
     try:
         parser = CiscoConfigParser(config_content)
         parsed_data = parser.parse()
+        
+        # Classify interfaces as WAN or LAN
+        wan_threshold, lan_threshold = get_interface_classification_thresholds()
+        for interface in parser.interfaces:
+            classify_interface(interface, wan_threshold, lan_threshold)
+        
         result = parser.to_dict()
         
         logger.info(
@@ -1149,6 +1750,1242 @@ def display_config():
     except Exception as error:
         logger.exception(f"Error parsing config {filename}: {error}")
         return jsonify({"error": f"Parse error: {str(error)}"}), 500
+
+
+# =============================================================================
+# POWER USER ROUTES - Destructive operations for development/testing
+# =============================================================================
+
+@app.route("/api/poweruser/unassign-all-templates", methods=["POST"])
+def poweruser_unassign_all_templates():
+    """Unassign all gateway templates from all sites.
+    
+    DESTRUCTIVE: Requires POWERUSER=true in .env
+    - Clears gatewaytemplate_id from all sites
+    - Unassigns all devices from all device profiles
+    
+    Returns:
+        JSON with operation results.
+    """
+    if not is_poweruser():
+        return jsonify({"error": "Power user mode not enabled"}), 403
+    
+    # Require explicit confirmation
+    data = request.get_json() or {}
+    if data.get("confirmation") != "CONFIRM":
+        return jsonify({
+            "error": "Confirmation required",
+            "message": "Send {\"confirmation\": \"CONFIRM\"} to proceed"
+        }), 400
+    
+    logger.warning("POWERUSER: Unassigning all templates from all sites")
+    
+    results = {
+        "sites_cleared": 0,
+        "profiles_cleared": 0,
+        "errors": []
+    }
+    
+    try:
+        site_manager = get_site_manager()
+        profile_manager = get_profile_manager()
+        
+        # Get all sites
+        sites = site_manager.list_all()
+        
+        for site in sites:
+            site_id = site.get("id")
+            site_name = site.get("name", "unknown")
+            
+            # Clear gateway template from site
+            if site.get("gatewaytemplate_id"):
+                try:
+                    update_result = site_manager.update(
+                        site_id,
+                        None,  # No address update
+                        gatewaytemplate_id=None,
+                        clear_gatewaytemplate=True
+                    )
+                    if update_result:
+                        results["sites_cleared"] += 1
+                        logger.info(f"POWERUSER: Cleared template from site {site_name}")
+                except Exception as error:
+                    results["errors"].append(f"Site {site_name}: {str(error)}")
+        
+        # Get all device profiles (hub profiles)
+        session = profile_manager.connection.session
+        if session:
+            try:
+                import mistapi
+                response = mistapi.api.v1.orgs.deviceprofiles.listOrgDeviceProfiles(
+                    session, profile_manager.connection.org_id, type="gateway"
+                )
+                if response.status_code == 200:
+                    profiles = response.data or []
+                    for profile in profiles:
+                        profile_id = profile.get("id")
+                        profile_name = profile.get("name", "unknown")
+                        
+                        # Unassign all devices from this profile
+                        try:
+                            # Get devices assigned to this profile using inventory API
+                            device_response = mistapi.api.v1.orgs.inventory.getOrgInventory(
+                                session, 
+                                profile_manager.connection.org_id,
+                                type="gateway"
+                            )
+                            if device_response.status_code == 200:
+                                devices = device_response.data or []
+                                profile_devices = [
+                                    d.get("mac") for d in devices 
+                                    if d.get("deviceprofile_id") == profile_id and d.get("mac")
+                                ]
+                                if profile_devices:
+                                    unassign_result = profile_manager.unassign_devices(
+                                        profile_id, profile_devices
+                                    )
+                                    if unassign_result:
+                                        results["profiles_cleared"] += 1
+                                        logger.info(
+                                            f"POWERUSER: Unassigned {len(profile_devices)} device(s) "
+                                            f"from profile {profile_name}"
+                                        )
+                        except Exception as error:
+                            results["errors"].append(f"Profile {profile_name}: {str(error)}")
+            except Exception as error:
+                results["errors"].append(f"Profile listing: {str(error)}")
+        
+        logger.warning(
+            f"POWERUSER: Completed unassign-all. "
+            f"Sites cleared: {results['sites_cleared']}, "
+            f"Profiles cleared: {results['profiles_cleared']}"
+        )
+        
+        return jsonify({
+            "status": "success",
+            "message": "All templates unassigned",
+            "results": results
+        })
+        
+    except Exception as error:
+        logger.exception(f"POWERUSER: Error in unassign-all: {error}")
+        return jsonify({"error": str(error)}), 500
+
+
+@app.route("/api/poweruser/delete-all-templates", methods=["POST"])
+def poweruser_delete_all_templates():
+    """Delete all gateway templates and device profiles.
+    
+    DESTRUCTIVE: Requires POWERUSER=true in .env
+    - Deletes all gateway templates (branch/standalone)
+    - Deletes all device profiles (hub)
+    
+    Returns:
+        JSON with operation results.
+    """
+    if not is_poweruser():
+        return jsonify({"error": "Power user mode not enabled"}), 403
+    
+    # Require explicit confirmation
+    data = request.get_json() or {}
+    if data.get("confirmation") != "CONFIRM":
+        return jsonify({
+            "error": "Confirmation required",
+            "message": "Send {\"confirmation\": \"CONFIRM\"} to proceed"
+        }), 400
+    
+    logger.warning("POWERUSER: Deleting all gateway templates and device profiles")
+    
+    results = {
+        "templates_deleted": 0,
+        "profiles_deleted": 0,
+        "errors": []
+    }
+    
+    try:
+        import mistapi
+        connection = get_mist_connection()
+        session = connection.session
+        org_id = connection.org_id
+        
+        if not session:
+            return jsonify({"error": "No Mist session available"}), 500
+        
+        # Delete all gateway templates
+        try:
+            response = mistapi.api.v1.orgs.gatewaytemplates.listOrgGatewayTemplates(
+                session, org_id
+            )
+            if response.status_code == 200:
+                templates = response.data or []
+                for template in templates:
+                    template_id = template.get("id")
+                    template_name = template.get("name", "unknown")
+                    try:
+                        delete_response = mistapi.api.v1.orgs.gatewaytemplates.deleteOrgGatewayTemplate(
+                            session, org_id, template_id
+                        )
+                        if delete_response.status_code in [200, 204]:
+                            results["templates_deleted"] += 1
+                            logger.info(f"POWERUSER: Deleted gateway template {template_name}")
+                        else:
+                            results["errors"].append(
+                                f"Template {template_name}: HTTP {delete_response.status_code}"
+                            )
+                    except Exception as error:
+                        results["errors"].append(f"Template {template_name}: {str(error)}")
+        except Exception as error:
+            results["errors"].append(f"Template listing: {str(error)}")
+        
+        # Delete all device profiles (hub profiles)
+        try:
+            response = mistapi.api.v1.orgs.deviceprofiles.listOrgDeviceProfiles(
+                session, org_id, type="gateway"
+            )
+            if response.status_code == 200:
+                profiles = response.data or []
+                for profile in profiles:
+                    profile_id = profile.get("id")
+                    profile_name = profile.get("name", "unknown")
+                    try:
+                        delete_response = mistapi.api.v1.orgs.deviceprofiles.deleteOrgDeviceProfile(
+                            session, org_id, profile_id
+                        )
+                        if delete_response.status_code in [200, 204]:
+                            results["profiles_deleted"] += 1
+                            logger.info(f"POWERUSER: Deleted device profile {profile_name}")
+                        else:
+                            results["errors"].append(
+                                f"Profile {profile_name}: HTTP {delete_response.status_code}"
+                            )
+                    except Exception as error:
+                        results["errors"].append(f"Profile {profile_name}: {str(error)}")
+        except Exception as error:
+            results["errors"].append(f"Profile listing: {str(error)}")
+        
+        logger.warning(
+            f"POWERUSER: Completed delete-all. "
+            f"Templates deleted: {results['templates_deleted']}, "
+            f"Profiles deleted: {results['profiles_deleted']}"
+        )
+        
+        return jsonify({
+            "status": "success",
+            "message": "All templates and profiles deleted",
+            "results": results
+        })
+        
+    except Exception as error:
+        logger.exception(f"POWERUSER: Error in delete-all: {error}")
+        return jsonify({"error": str(error)}), 500
+
+
+@app.route("/api/poweruser/unassign-templated-devices", methods=["POST"])
+def poweruser_unassign_templated_devices():
+    """Unassign gateway devices that have templates or hub profiles assigned.
+    
+    DESTRUCTIVE: Requires POWERUSER=true in .env
+    - Finds all sites with gatewaytemplate_id (branch/standalone templates)
+    - Gets all gateway devices at those sites
+    - Also finds devices with deviceprofile_id (hub profiles)
+    - Moves all templated devices to unassigned inventory
+    
+    Returns:
+        JSON with operation results.
+    """
+    if not is_poweruser():
+        return jsonify({"error": "Power user mode not enabled"}), 403
+    
+    # Require explicit confirmation
+    data = request.get_json() or {}
+    if data.get("confirmation") != "CONFIRM":
+        return jsonify({
+            "error": "Confirmation required",
+            "message": "Send {\"confirmation\": \"CONFIRM\"} to proceed"
+        }), 400
+    
+    logger.warning("POWERUSER: Unassigning gateway devices from templated sites and hub profiles")
+    
+    results = {
+        "sites_scanned": 0,
+        "templated_sites": 0,
+        "hub_devices_found": 0,
+        "devices_unassigned": 0,
+        "errors": []
+    }
+    
+    try:
+        import mistapi
+        site_manager = get_site_manager()
+        connection = get_mist_connection()
+        session = connection.session
+        org_id = connection.org_id
+        
+        all_macs_to_unassign = set()  # Use set to avoid duplicates
+        
+        # === Part 1: Find devices at sites with gateway templates (branch/standalone) ===
+        sites = site_manager.list_all()
+        results["sites_scanned"] = len(sites)
+        
+        for site in sites:
+            site_id = site.get("id")
+            site_name = site.get("name", "unknown")
+            
+            # Check if site has a gateway template assigned
+            if site.get("gatewaytemplate_id"):
+                results["templated_sites"] += 1
+                logger.debug(f"POWERUSER: Site {site_name} has template assigned")
+                
+                # Get all gateway devices at this site
+                try:
+                    gateways = site_manager.get_site_gateways(site_id)
+                    for gateway in gateways:
+                        mac = gateway.get("mac")
+                        if mac:
+                            all_macs_to_unassign.add(mac)
+                            logger.debug(f"POWERUSER: Will unassign gateway {mac} from templated site {site_name}")
+                except Exception as error:
+                    results["errors"].append(f"Site {site_name} device list: {str(error)}")
+        
+        # === Part 2: Find devices with hub profiles (deviceprofile_id) ===
+        if session:
+            try:
+                # Use getOrgInventory to list all gateway devices (assigned or not)
+                device_response = mistapi.api.v1.orgs.inventory.getOrgInventory(
+                    session, org_id, type="gateway"
+                )
+                if device_response.status_code == 200:
+                    all_devices = device_response.data or []
+                    for device in all_devices:
+                        # Check if device has a device profile (hub profile) assigned
+                        if device.get("deviceprofile_id"):
+                            mac = device.get("mac")
+                            if mac:
+                                results["hub_devices_found"] += 1
+                                all_macs_to_unassign.add(mac)
+                                device_name = device.get("name", mac)
+                                logger.debug(f"POWERUSER: Will unassign hub device {device_name} ({mac})")
+            except Exception as error:
+                results["errors"].append(f"Org device listing: {str(error)}")
+        
+        # Unassign all collected devices in one batch
+        macs_list = list(all_macs_to_unassign)
+        if macs_list:
+            logger.info(f"POWERUSER: Unassigning {len(macs_list)} device(s) from templated sites/hub profiles")
+            
+            unassign_result = site_manager.unassign_devices_from_site(macs_list)
+            if unassign_result:
+                success_list = unassign_result.get("success", [])
+                error_list = unassign_result.get("error", [])
+                results["devices_unassigned"] = len(success_list)
+                
+                if error_list:
+                    for err in error_list:
+                        results["errors"].append(f"Unassign error: {err}")
+            else:
+                results["errors"].append("Unassign operation failed")
+        
+        logger.warning(
+            f"POWERUSER: Completed unassign-templated-devices. "
+            f"Sites scanned: {results['sites_scanned']}, "
+            f"Templated sites: {results['templated_sites']}, "
+            f"Hub devices found: {results['hub_devices_found']}, "
+            f"Devices unassigned: {results['devices_unassigned']}"
+        )
+        
+        return jsonify({
+            "status": "success",
+            "message": f"Unassigned {results['devices_unassigned']} device(s) from {results['templated_sites']} templated site(s) and {results['hub_devices_found']} hub profile(s)",
+            "results": results
+        })
+        
+    except Exception as error:
+        logger.exception(f"POWERUSER: Error in unassign-templated-devices: {error}")
+        return jsonify({"error": str(error)}), 500
+
+
+@app.route("/api/poweruser/backup-service-policies", methods=["POST"])
+def poweruser_backup_service_policies():
+    """Backup all organization service policies to a JSON file.
+    
+    NON-DESTRUCTIVE: Requires POWERUSER=true in .env
+    - Fetches all service policies from the org
+    - Saves them to data/service_policies_backup_<timestamp>.json
+    
+    Returns:
+        JSON with backup results including filename and policy count.
+    """
+    if not is_poweruser():
+        return jsonify({"error": "Power user mode not enabled"}), 403
+    
+    import json
+    from datetime import datetime
+    
+    logger.info("POWERUSER: Backing up service policies")
+    
+    results = {
+        "policies_count": 0,
+        "filename": "",
+        "errors": []
+    }
+    
+    try:
+        connection = get_mist_connection()
+        session = connection.session
+        org_id = connection.org_id
+        
+        if not session:
+            return jsonify({"error": "Not connected to Mist API"}), 500
+        
+        # Fetch all service policies
+        response = mistapi.api.v1.orgs.servicepolicies.listOrgServicePolicies(
+            session, org_id
+        )
+        
+        if response.status_code != 200:
+            return jsonify({
+                "error": f"API error: {response.status_code}"
+            }), 500
+        
+        policies = response.data or []
+        results["policies_count"] = len(policies)
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"service_policies_backup_{timestamp}.json"
+        filepath = os.path.join(OUTPUT_DIR, filename)
+        
+        # Save to JSON file
+        with open(filepath, "w", encoding="utf-8") as file:
+            json.dump(policies, file, indent=2)
+        
+        results["filename"] = filename
+        
+        logger.info(
+            f"POWERUSER: Backed up {results['policies_count']} service policies to {filename}"
+        )
+        
+        return jsonify({
+            "status": "success",
+            "message": f"Backed up {results['policies_count']} service policies to {filename}",
+            "results": results
+        })
+        
+    except Exception as error:
+        logger.exception(f"POWERUSER: Error backing up service policies: {error}")
+        return jsonify({"error": str(error)}), 500
+
+
+@app.route("/api/poweruser/list-service-policy-backups", methods=["GET"])
+def poweruser_list_service_policy_backups():
+    """List available service policy backup files.
+    
+    NON-DESTRUCTIVE: Requires POWERUSER=true in .env
+    - Scans output folder for service_policies_backup_*.json files
+    - Returns list of files with metadata
+    
+    Returns:
+        JSON with list of backup files.
+    """
+    if not is_poweruser():
+        return jsonify({"error": "Power user mode not enabled"}), 403
+    
+    import json
+    import glob
+    
+    try:
+        # Find all service policy backup files
+        pattern = os.path.join(OUTPUT_DIR, "service_policies_backup_*.json")
+        backup_files = glob.glob(pattern)
+        
+        files = []
+        for filepath in sorted(backup_files, reverse=True):  # Most recent first
+            filename = os.path.basename(filepath)
+            try:
+                with open(filepath, "r", encoding="utf-8") as file:
+                    policies = json.load(file)
+                    policies_count = len(policies) if isinstance(policies, list) else 0
+            except Exception:
+                policies_count = 0
+            
+            files.append({
+                "filename": filename,
+                "policies_count": policies_count
+            })
+        
+        return jsonify({
+            "status": "success",
+            "files": files
+        })
+        
+    except Exception as error:
+        logger.exception(f"POWERUSER: Error listing backup files: {error}")
+        return jsonify({"error": str(error)}), 500
+
+
+@app.route("/api/poweruser/restore-service-policies", methods=["POST"])
+def poweruser_restore_service_policies():
+    """Restore service policies from a backup file.
+    
+    DESTRUCTIVE: Requires POWERUSER=true in .env
+    - Reads policies from the specified backup file
+    - For each policy: updates if exists (by name), creates if not
+    
+    Returns:
+        JSON with restore results.
+    """
+    if not is_poweruser():
+        return jsonify({"error": "Power user mode not enabled"}), 403
+    
+    # Require explicit confirmation
+    data = request.get_json() or {}
+    if data.get("confirmation") != "CONFIRM":
+        return jsonify({
+            "error": "Confirmation required",
+            "message": "Send {\"confirmation\": \"CONFIRM\"} to proceed"
+        }), 400
+    
+    filename = data.get("filename")
+    if not filename:
+        return jsonify({"error": "No filename specified"}), 400
+    
+    # Validate filename (prevent path traversal)
+    if ".." in filename or "/" in filename or "\\" in filename:
+        return jsonify({"error": "Invalid filename"}), 400
+    
+    import json
+    
+    logger.warning(f"POWERUSER: Restoring service policies from {filename}")
+    
+    results = {
+        "created": 0,
+        "updated": 0,
+        "skipped": 0,
+        "errors": []
+    }
+    
+    try:
+        filepath = os.path.join(OUTPUT_DIR, filename)
+        if not os.path.exists(filepath):
+            return jsonify({"error": f"Backup file not found: {filename}"}), 404
+        
+        # Load backup data
+        with open(filepath, "r", encoding="utf-8") as file:
+            backup_policies = json.load(file)
+        
+        if not isinstance(backup_policies, list):
+            return jsonify({"error": "Invalid backup file format"}), 400
+        
+        connection = get_mist_connection()
+        session = connection.session
+        org_id = connection.org_id
+        
+        if not session:
+            return jsonify({"error": "Not connected to Mist API"}), 500
+        
+        # Get current policies to check for existing ones
+        current_response = mistapi.api.v1.orgs.servicepolicies.listOrgServicePolicies(
+            session, org_id
+        )
+        current_policies = current_response.data or [] if current_response.status_code == 200 else []
+        
+        # Build lookup by name
+        current_by_name = {p.get("name"): p for p in current_policies if p.get("name")}
+        
+        for policy in backup_policies:
+            policy_name = policy.get("name")
+            if not policy_name:
+                results["skipped"] += 1
+                results["errors"].append("Skipped policy with no name")
+                continue
+            
+            # Remove read-only fields before create/update
+            policy_data = {k: v for k, v in policy.items() 
+                         if k not in ["id", "org_id", "created_time", "modified_time", "createdBy"]}
+            
+            try:
+                if policy_name in current_by_name:
+                    # Update existing policy
+                    existing_id = current_by_name[policy_name].get("id")
+                    update_response = mistapi.api.v1.orgs.servicepolicies.updateOrgServicePolicy(
+                        session, org_id, existing_id, policy_data
+                    )
+                    if update_response.status_code in [200, 201]:
+                        results["updated"] += 1
+                        logger.debug(f"POWERUSER: Updated service policy: {policy_name}")
+                    else:
+                        results["errors"].append(f"Update {policy_name}: HTTP {update_response.status_code}")
+                else:
+                    # Create new policy
+                    create_response = mistapi.api.v1.orgs.servicepolicies.createOrgServicePolicy(
+                        session, org_id, policy_data
+                    )
+                    if create_response.status_code in [200, 201]:
+                        results["created"] += 1
+                        logger.debug(f"POWERUSER: Created service policy: {policy_name}")
+                    else:
+                        results["errors"].append(f"Create {policy_name}: HTTP {create_response.status_code}")
+            except Exception as error:
+                results["errors"].append(f"{policy_name}: {str(error)}")
+        
+        logger.warning(
+            f"POWERUSER: Completed restore. Created: {results['created']}, "
+            f"Updated: {results['updated']}, Skipped: {results['skipped']}"
+        )
+        
+        return jsonify({
+            "status": "success",
+            "message": f"Restored {results['created']} new, {results['updated']} updated policies",
+            "results": results
+        })
+        
+    except Exception as error:
+        logger.exception(f"POWERUSER: Error restoring service policies: {error}")
+        return jsonify({"error": str(error)}), 500
+
+
+@app.route("/api/poweruser/backup-services", methods=["POST"])
+def poweruser_backup_services():
+    """Backup all organization services to a JSON file.
+    
+    NON-DESTRUCTIVE: Requires POWERUSER=true in .env
+    - Fetches all services from the org
+    - Saves them to output/services_backup_<timestamp>.json
+    
+    Returns:
+        JSON with backup results including filename and service count.
+    """
+    if not is_poweruser():
+        return jsonify({"error": "Power user mode not enabled"}), 403
+    
+    import json
+    from datetime import datetime
+    
+    logger.info("POWERUSER: Backing up services")
+    
+    results = {
+        "services_count": 0,
+        "filename": "",
+        "errors": []
+    }
+    
+    try:
+        connection = get_mist_connection()
+        session = connection.session
+        org_id = connection.org_id
+        
+        if not session:
+            return jsonify({"error": "Not connected to Mist API"}), 500
+        
+        # Fetch all services
+        response = mistapi.api.v1.orgs.services.listOrgServices(
+            session, org_id
+        )
+        
+        if response.status_code != 200:
+            return jsonify({
+                "error": f"API error: {response.status_code}"
+            }), 500
+        
+        services = response.data or []
+        results["services_count"] = len(services)
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"services_backup_{timestamp}.json"
+        filepath = os.path.join(OUTPUT_DIR, filename)
+        
+        # Save to JSON file
+        with open(filepath, "w", encoding="utf-8") as file:
+            json.dump(services, file, indent=2)
+        
+        results["filename"] = filename
+        
+        logger.info(
+            f"POWERUSER: Backed up {results['services_count']} services to {filename}"
+        )
+        
+        return jsonify({
+            "status": "success",
+            "message": f"Backed up {results['services_count']} services to {filename}",
+            "results": results
+        })
+        
+    except Exception as error:
+        logger.exception(f"POWERUSER: Error backing up services: {error}")
+        return jsonify({"error": str(error)}), 500
+
+
+@app.route("/api/poweruser/list-service-backups", methods=["GET"])
+def poweruser_list_service_backups():
+    """List available service backup files.
+    
+    NON-DESTRUCTIVE: Requires POWERUSER=true in .env
+    - Scans output folder for services_backup_*.json files
+    - Returns list of files with metadata
+    
+    Returns:
+        JSON with list of backup files.
+    """
+    if not is_poweruser():
+        return jsonify({"error": "Power user mode not enabled"}), 403
+    
+    import json
+    import glob
+    
+    try:
+        # Find all service backup files
+        pattern = os.path.join(OUTPUT_DIR, "services_backup_*.json")
+        backup_files = glob.glob(pattern)
+        
+        files = []
+        for filepath in sorted(backup_files, reverse=True):  # Most recent first
+            filename = os.path.basename(filepath)
+            try:
+                with open(filepath, "r", encoding="utf-8") as file:
+                    services = json.load(file)
+                    services_count = len(services) if isinstance(services, list) else 0
+            except Exception:
+                services_count = 0
+            
+            files.append({
+                "filename": filename,
+                "services_count": services_count
+            })
+        
+        return jsonify({
+            "status": "success",
+            "files": files
+        })
+        
+    except Exception as error:
+        logger.exception(f"POWERUSER: Error listing service backup files: {error}")
+        return jsonify({"error": str(error)}), 500
+
+
+@app.route("/api/poweruser/restore-services", methods=["POST"])
+def poweruser_restore_services():
+    """Restore services from a backup file.
+    
+    DESTRUCTIVE: Requires POWERUSER=true in .env
+    - Reads services from the specified backup file
+    - For each service: updates if exists (by name), creates if not
+    
+    Returns:
+        JSON with restore results.
+    """
+    if not is_poweruser():
+        return jsonify({"error": "Power user mode not enabled"}), 403
+    
+    # Require explicit confirmation
+    data = request.get_json() or {}
+    if data.get("confirmation") != "CONFIRM":
+        return jsonify({
+            "error": "Confirmation required",
+            "message": "Send {\"confirmation\": \"CONFIRM\"} to proceed"
+        }), 400
+    
+    filename = data.get("filename")
+    if not filename:
+        return jsonify({"error": "No filename specified"}), 400
+    
+    # Validate filename (prevent path traversal)
+    if ".." in filename or "/" in filename or "\\" in filename:
+        return jsonify({"error": "Invalid filename"}), 400
+    
+    import json
+    
+    logger.warning(f"POWERUSER: Restoring services from {filename}")
+    
+    results = {
+        "created": 0,
+        "updated": 0,
+        "skipped": 0,
+        "errors": []
+    }
+    
+    try:
+        filepath = os.path.join(OUTPUT_DIR, filename)
+        if not os.path.exists(filepath):
+            return jsonify({"error": f"Backup file not found: {filename}"}), 404
+        
+        # Load backup data
+        with open(filepath, "r", encoding="utf-8") as file:
+            backup_services = json.load(file)
+        
+        if not isinstance(backup_services, list):
+            return jsonify({"error": "Invalid backup file format"}), 400
+        
+        connection = get_mist_connection()
+        session = connection.session
+        org_id = connection.org_id
+        
+        if not session:
+            return jsonify({"error": "Not connected to Mist API"}), 500
+        
+        # Get current services to check for existing ones
+        current_response = mistapi.api.v1.orgs.services.listOrgServices(
+            session, org_id
+        )
+        current_services = current_response.data or [] if current_response.status_code == 200 else []
+        
+        # Build lookup by name
+        current_by_name = {s.get("name"): s for s in current_services if s.get("name")}
+        
+        for service in backup_services:
+            service_name = service.get("name")
+            if not service_name:
+                results["skipped"] += 1
+                results["errors"].append("Skipped service with no name")
+                continue
+            
+            # Remove read-only fields before create/update
+            service_data = {k: v for k, v in service.items() 
+                         if k not in ["id", "org_id", "created_time", "modified_time", "createdBy"]}
+            
+            try:
+                if service_name in current_by_name:
+                    # Update existing service
+                    existing_id = current_by_name[service_name].get("id")
+                    update_response = mistapi.api.v1.orgs.services.updateOrgService(
+                        session, org_id, existing_id, service_data
+                    )
+                    if update_response.status_code in [200, 201]:
+                        results["updated"] += 1
+                        logger.debug(f"POWERUSER: Updated service: {service_name}")
+                    else:
+                        results["errors"].append(f"Update {service_name}: HTTP {update_response.status_code}")
+                else:
+                    # Create new service
+                    create_response = mistapi.api.v1.orgs.services.createOrgService(
+                        session, org_id, service_data
+                    )
+                    if create_response.status_code in [200, 201]:
+                        results["created"] += 1
+                        logger.debug(f"POWERUSER: Created service: {service_name}")
+                    else:
+                        results["errors"].append(f"Create {service_name}: HTTP {create_response.status_code}")
+            except Exception as error:
+                results["errors"].append(f"{service_name}: {str(error)}")
+        
+        logger.warning(
+            f"POWERUSER: Completed service restore. Created: {results['created']}, "
+            f"Updated: {results['updated']}, Skipped: {results['skipped']}"
+        )
+        
+        return jsonify({
+            "status": "success",
+            "message": f"Restored {results['created']} new, {results['updated']} updated services",
+            "results": results
+        })
+        
+    except Exception as error:
+        logger.exception(f"POWERUSER: Error restoring services: {error}")
+        return jsonify({"error": str(error)}), 500
+
+
+@app.route("/api/poweruser/delete-all-services", methods=["POST"])
+def poweruser_delete_all_services():
+    """Delete all organization services.
+    
+    DESTRUCTIVE: Requires POWERUSER=true in .env
+    - Fetches all services from the org
+    - Deletes each one
+    
+    Returns:
+        JSON with deletion results.
+    """
+    if not is_poweruser():
+        return jsonify({"error": "Power user mode not enabled"}), 403
+    
+    # Require explicit confirmation
+    data = request.get_json() or {}
+    if data.get("confirmation") != "CONFIRM":
+        return jsonify({
+            "error": "Confirmation required",
+            "message": "Send {\"confirmation\": \"CONFIRM\"} to proceed"
+        }), 400
+    
+    logger.warning("POWERUSER: Deleting all services")
+    
+    results = {
+        "deleted": 0,
+        "errors": []
+    }
+    
+    try:
+        connection = get_mist_connection()
+        session = connection.session
+        org_id = connection.org_id
+        
+        if not session:
+            return jsonify({"error": "Not connected to Mist API"}), 500
+        
+        # Fetch all services
+        response = mistapi.api.v1.orgs.services.listOrgServices(
+            session, org_id
+        )
+        
+        if response.status_code != 200:
+            return jsonify({
+                "error": f"API error: {response.status_code}"
+            }), 500
+        
+        services = response.data or []
+        
+        for service in services:
+            service_id = service.get("id")
+            service_name = service.get("name", "Unknown")
+            
+            if not service_id:
+                results["errors"].append(f"Service has no ID: {service_name}")
+                continue
+            
+            try:
+                delete_response = mistapi.api.v1.orgs.services.deleteOrgService(
+                    session, org_id, service_id
+                )
+                if delete_response.status_code in [200, 204]:
+                    results["deleted"] += 1
+                    logger.debug(f"POWERUSER: Deleted service: {service_name}")
+                else:
+                    results["errors"].append(f"Delete {service_name}: HTTP {delete_response.status_code}")
+            except Exception as error:
+                results["errors"].append(f"{service_name}: {str(error)}")
+        
+        logger.warning(f"POWERUSER: Deleted {results['deleted']} services")
+        
+        return jsonify({
+            "status": "success",
+            "message": f"Deleted {results['deleted']} services",
+            "results": results
+        })
+        
+    except Exception as error:
+        logger.exception(f"POWERUSER: Error deleting services: {error}")
+        return jsonify({"error": str(error)}), 500
+
+
+@app.route("/api/poweruser/backup-networks", methods=["POST"])
+def poweruser_backup_networks():
+    """Backup all organization networks to a JSON file.
+    
+    NON-DESTRUCTIVE: Requires POWERUSER=true in .env
+    - Fetches all networks from the org
+    - Saves them to output/networks_backup_<timestamp>.json
+    
+    Returns:
+        JSON with backup results including filename and network count.
+    """
+    if not is_poweruser():
+        return jsonify({"error": "Power user mode not enabled"}), 403
+    
+    import json
+    from datetime import datetime
+    
+    logger.info("POWERUSER: Backing up networks")
+    
+    results = {
+        "networks_count": 0,
+        "filename": "",
+        "errors": []
+    }
+    
+    try:
+        connection = get_mist_connection()
+        session = connection.session
+        org_id = connection.org_id
+        
+        if not session:
+            return jsonify({"error": "Not connected to Mist API"}), 500
+        
+        # Fetch all networks
+        response = mistapi.api.v1.orgs.networks.listOrgNetworks(
+            session, org_id
+        )
+        
+        if response.status_code != 200:
+            return jsonify({
+                "error": f"API error: {response.status_code}"
+            }), 500
+        
+        networks = response.data or []
+        results["networks_count"] = len(networks)
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"networks_backup_{timestamp}.json"
+        filepath = os.path.join(OUTPUT_DIR, filename)
+        
+        # Save to JSON file
+        with open(filepath, "w", encoding="utf-8") as file:
+            json.dump(networks, file, indent=2)
+        
+        results["filename"] = filename
+        
+        logger.info(
+            f"POWERUSER: Backed up {results['networks_count']} networks to {filename}"
+        )
+        
+        return jsonify({
+            "status": "success",
+            "message": f"Backed up {results['networks_count']} networks to {filename}",
+            "results": results
+        })
+        
+    except Exception as error:
+        logger.exception(f"POWERUSER: Error backing up networks: {error}")
+        return jsonify({"error": str(error)}), 500
+
+
+@app.route("/api/poweruser/list-network-backups", methods=["GET"])
+def poweruser_list_network_backups():
+    """List available network backup files.
+    
+    NON-DESTRUCTIVE: Requires POWERUSER=true in .env
+    - Scans output folder for networks_backup_*.json files
+    - Returns list of files with metadata
+    
+    Returns:
+        JSON with list of backup files.
+    """
+    if not is_poweruser():
+        return jsonify({"error": "Power user mode not enabled"}), 403
+    
+    import json
+    import glob
+    
+    try:
+        # Find all network backup files
+        pattern = os.path.join(OUTPUT_DIR, "networks_backup_*.json")
+        backup_files = glob.glob(pattern)
+        
+        files = []
+        for filepath in sorted(backup_files, reverse=True):  # Most recent first
+            filename = os.path.basename(filepath)
+            try:
+                with open(filepath, "r", encoding="utf-8") as file:
+                    networks = json.load(file)
+                    networks_count = len(networks) if isinstance(networks, list) else 0
+            except Exception:
+                networks_count = 0
+            
+            files.append({
+                "filename": filename,
+                "networks_count": networks_count
+            })
+        
+        return jsonify({
+            "status": "success",
+            "files": files
+        })
+        
+    except Exception as error:
+        logger.exception(f"POWERUSER: Error listing network backup files: {error}")
+        return jsonify({"error": str(error)}), 500
+
+
+@app.route("/api/poweruser/restore-networks", methods=["POST"])
+def poweruser_restore_networks():
+    """Restore networks from a backup file.
+    
+    DESTRUCTIVE: Requires POWERUSER=true in .env
+    - Reads networks from the specified backup file
+    - For each network: updates if exists (by name), creates if not
+    
+    Returns:
+        JSON with restore results.
+    """
+    if not is_poweruser():
+        return jsonify({"error": "Power user mode not enabled"}), 403
+    
+    # Require explicit confirmation
+    data = request.get_json() or {}
+    if data.get("confirmation") != "CONFIRM":
+        return jsonify({
+            "error": "Confirmation required",
+            "message": "Send {\"confirmation\": \"CONFIRM\"} to proceed"
+        }), 400
+    
+    filename = data.get("filename")
+    if not filename:
+        return jsonify({"error": "No filename specified"}), 400
+    
+    # Validate filename (prevent path traversal)
+    if ".." in filename or "/" in filename or "\\" in filename:
+        return jsonify({"error": "Invalid filename"}), 400
+    
+    import json
+    
+    logger.warning(f"POWERUSER: Restoring networks from {filename}")
+    
+    results = {
+        "created": 0,
+        "updated": 0,
+        "skipped": 0,
+        "errors": []
+    }
+    
+    try:
+        filepath = os.path.join(OUTPUT_DIR, filename)
+        if not os.path.exists(filepath):
+            return jsonify({"error": f"Backup file not found: {filename}"}), 404
+        
+        # Load backup data
+        with open(filepath, "r", encoding="utf-8") as file:
+            backup_networks = json.load(file)
+        
+        if not isinstance(backup_networks, list):
+            return jsonify({"error": "Invalid backup file format"}), 400
+        
+        connection = get_mist_connection()
+        session = connection.session
+        org_id = connection.org_id
+        
+        if not session:
+            return jsonify({"error": "Not connected to Mist API"}), 500
+        
+        # Get current networks to check for existing ones
+        current_response = mistapi.api.v1.orgs.networks.listOrgNetworks(
+            session, org_id
+        )
+        current_networks = current_response.data or [] if current_response.status_code == 200 else []
+        
+        # Build lookup by name
+        current_by_name = {n.get("name"): n for n in current_networks if n.get("name")}
+        
+        for network in backup_networks:
+            network_name = network.get("name")
+            if not network_name:
+                results["skipped"] += 1
+                results["errors"].append("Skipped network with no name")
+                continue
+            
+            # Remove read-only fields before create/update
+            network_data = {k: v for k, v in network.items() 
+                         if k not in ["id", "org_id", "created_time", "modified_time", "createdBy"]}
+            
+            try:
+                if network_name in current_by_name:
+                    # Update existing network
+                    existing_id = current_by_name[network_name].get("id")
+                    update_response = mistapi.api.v1.orgs.networks.updateOrgNetwork(
+                        session, org_id, existing_id, network_data
+                    )
+                    if update_response.status_code in [200, 201]:
+                        results["updated"] += 1
+                        logger.debug(f"POWERUSER: Updated network: {network_name}")
+                    else:
+                        results["errors"].append(f"Update {network_name}: HTTP {update_response.status_code}")
+                else:
+                    # Create new network
+                    create_response = mistapi.api.v1.orgs.networks.createOrgNetwork(
+                        session, org_id, network_data
+                    )
+                    if create_response.status_code in [200, 201]:
+                        results["created"] += 1
+                        logger.debug(f"POWERUSER: Created network: {network_name}")
+                    else:
+                        results["errors"].append(f"Create {network_name}: HTTP {create_response.status_code}")
+            except Exception as error:
+                results["errors"].append(f"{network_name}: {str(error)}")
+        
+        logger.warning(
+            f"POWERUSER: Completed network restore. Created: {results['created']}, "
+            f"Updated: {results['updated']}, Skipped: {results['skipped']}"
+        )
+        
+        return jsonify({
+            "status": "success",
+            "message": f"Restored {results['created']} new, {results['updated']} updated networks",
+            "results": results
+        })
+        
+    except Exception as error:
+        logger.exception(f"POWERUSER: Error restoring networks: {error}")
+        return jsonify({"error": str(error)}), 500
+
+
+@app.route("/api/poweruser/delete-all-networks", methods=["POST"])
+def poweruser_delete_all_networks():
+    """Delete all organization networks.
+    
+    DESTRUCTIVE: Requires POWERUSER=true in .env
+    - Fetches all networks from the org
+    - Deletes each one
+    
+    Returns:
+        JSON with deletion results.
+    """
+    if not is_poweruser():
+        return jsonify({"error": "Power user mode not enabled"}), 403
+    
+    # Require explicit confirmation
+    data = request.get_json() or {}
+    if data.get("confirmation") != "CONFIRM":
+        return jsonify({
+            "error": "Confirmation required",
+            "message": "Send {\"confirmation\": \"CONFIRM\"} to proceed"
+        }), 400
+    
+    logger.warning("POWERUSER: Deleting all networks")
+    
+    results = {
+        "deleted": 0,
+        "errors": []
+    }
+    
+    try:
+        connection = get_mist_connection()
+        session = connection.session
+        org_id = connection.org_id
+        
+        if not session:
+            return jsonify({"error": "Not connected to Mist API"}), 500
+        
+        # Fetch all networks
+        response = mistapi.api.v1.orgs.networks.listOrgNetworks(
+            session, org_id
+        )
+        
+        if response.status_code != 200:
+            return jsonify({
+                "error": f"API error: {response.status_code}"
+            }), 500
+        
+        networks = response.data or []
+        
+        for network in networks:
+            network_id = network.get("id")
+            network_name = network.get("name", "Unknown")
+            
+            if not network_id:
+                results["errors"].append(f"Network has no ID: {network_name}")
+                continue
+            
+            try:
+                delete_response = mistapi.api.v1.orgs.networks.deleteOrgNetwork(
+                    session, org_id, network_id
+                )
+                if delete_response.status_code in [200, 204]:
+                    results["deleted"] += 1
+                    logger.debug(f"POWERUSER: Deleted network: {network_name}")
+                else:
+                    results["errors"].append(f"Delete {network_name}: HTTP {delete_response.status_code}")
+            except Exception as error:
+                results["errors"].append(f"{network_name}: {str(error)}")
+        
+        logger.warning(f"POWERUSER: Deleted {results['deleted']} networks")
+        
+        return jsonify({
+            "status": "success",
+            "message": f"Deleted {results['deleted']} networks",
+            "results": results
+        })
+        
+    except Exception as error:
+        logger.exception(f"POWERUSER: Error deleting networks: {error}")
+        return jsonify({"error": str(error)}), 500
 
 
 if __name__ == "__main__":

@@ -8,6 +8,25 @@ import logging
 import os
 
 import mistapi
+from requests.adapters import HTTPAdapter
+
+
+# Default timeout for Mist API requests (connect timeout, read timeout)
+# Loose timeout (2 min) to handle slow API responses while preventing indefinite hangs
+DEFAULT_TIMEOUT = (30, 120)
+
+
+class TimeoutHTTPAdapter(HTTPAdapter):
+    """HTTP adapter that applies default timeout to all requests."""
+    
+    def __init__(self, *args, timeout=DEFAULT_TIMEOUT, **kwargs):
+        self.timeout = timeout
+        super().__init__(*args, **kwargs)
+    
+    def send(self, request, **kwargs):
+        """Send request with default timeout if not specified."""
+        kwargs.setdefault("timeout", self.timeout)
+        return super().send(request, **kwargs)
 
 
 class MistConnection:
@@ -54,6 +73,10 @@ class MistConnection:
                     host=self.host,
                     apitoken=self.api_token
                 )
+                # Mount timeout adapter to prevent indefinite hangs on API calls
+                timeout_adapter = TimeoutHTTPAdapter()
+                self._session._session.mount("https://", timeout_adapter)
+                self._session._session.mount("http://", timeout_adapter)
                 self._logger.info("Mist API session initialized")
             except Exception as error:
                 self._logger.error(f"Failed to initialize Mist API session: {error}")
