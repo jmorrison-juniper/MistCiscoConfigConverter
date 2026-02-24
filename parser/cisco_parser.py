@@ -18,6 +18,29 @@ logger = logging.getLogger(__name__)
 CISCO_TYPE7_KEY = "dsfd;kfoA,.iyewrkldJKDHSUBsgvca69834ncxv9873254k;fg87"
 
 
+def subnet_mask_to_cidr(mask: str) -> int:
+    """Convert a dotted-decimal subnet mask to CIDR prefix length.
+    
+    Args:
+        mask: Subnet mask string (e.g., "255.255.255.0")
+    
+    Returns:
+        CIDR prefix length (e.g., 24). Returns 0 if invalid.
+    """
+    if not mask:
+        return 0
+    try:
+        octets = mask.split(".")
+        if len(octets) != 4:
+            return 0
+        binary = "".join(format(int(octet), "08b") for octet in octets)
+        # Count leading 1s
+        cidr = len(binary) - len(binary.lstrip("1"))
+        return cidr
+    except (ValueError, AttributeError):
+        return 0
+
+
 def decode_cisco_type7(encoded: str) -> str:
     """Decode a Cisco Type 7 encoded password.
     
@@ -294,6 +317,9 @@ class InterfaceConfig:
     lan_score: float = 0.0  # Confidence score for LAN classification (0.0-1.0)
     classification_confidence: float = 0.0  # Confidence in the classification
     classification_indicators: list = field(default_factory=list)  # Reasons for classification
+    # HSRP/VRRP configuration
+    hsrp_version: int = 0  # HSRP version (1 or 2)
+    hsrp_groups: list = field(default_factory=list)  # List of HSRP group dicts
 
 
 # Interface classification weights
@@ -1654,6 +1680,58 @@ class CiscoConfigParser:
             # tunnel source <interface-name or IP>
             source = line.split("tunnel source ", 1)[1].strip()
             interface.tunnel_source = source
+        elif line.startswith("standby version "):
+            # standby version 2
+            try:
+                interface.hsrp_version = int(line.split("standby version ", 1)[1].strip())
+            except (ValueError, IndexError):
+                pass
+        elif line.startswith("standby "):
+            # Parse HSRP group configurations
+            self._parse_hsrp_line(line, interface)
+    
+    def _parse_hsrp_line(self, line: str, interface: InterfaceConfig):
+        """Parse an HSRP standby configuration line.
+        
+        Handles:
+        - standby <group> ip <vip>
+        - standby <group> priority <n>
+        - standby <group> preempt [delay ...]
+        
+        Args:
+            line: The standby configuration line (already stripped)
+            interface: InterfaceConfig to update
+        """
+        parts = line.split()
+        if len(parts) < 3:
+            return
+        
+        # parts[0] = "standby", parts[1] = group number, parts[2] = keyword
+        try:
+            group_id = int(parts[1])
+        except ValueError:
+            return
+        
+        # Find or create the HSRP group entry
+        hsrp_group = None
+        for group in interface.hsrp_groups:
+            if group.get("group_id") == group_id:
+                hsrp_group = group
+                break
+        if hsrp_group is None:
+            hsrp_group = {"group_id": group_id, "vip": "", "priority": 100, "preempt": False}
+            interface.hsrp_groups.append(hsrp_group)
+        
+        keyword = parts[2]
+        if keyword == "ip" and len(parts) >= 4:
+            hsrp_group["vip"] = parts[3]
+        elif keyword == "priority" and len(parts) >= 4:
+            try:
+                hsrp_group["priority"] = int(parts[3])
+            except ValueError:
+                pass
+        elif keyword == "preempt":
+            hsrp_group["preempt"] = True
     
     def _parse_routing(self):
         """Extract routing configurations (BGP, static routes)."""
@@ -1981,6 +2059,14 @@ class CiscoConfigParser:
                     "lan_score": round(i.lan_score, 3),
                     "classification_confidence": round(i.classification_confidence, 3),
                     "classification_indicators": i.classification_indicators,
+                    # HSRP/VRRP fields
+                    "hsrp_version": i.hsrp_version,
+                    "hsrp_groups": i.hsrp_groups,
+                    # Bandwidth fields
+                    "upload_kbps": i.upload_kbps,
+                    "download_kbps": i.download_kbps,
+                    "derived_upload_kbps": i.derived_upload_kbps,
+                    "derived_download_kbps": i.derived_download_kbps,
                     "raw_config": i.raw_config
                 }
                 for i in self.interfaces

@@ -15,7 +15,7 @@ from flask import Flask, jsonify, render_template, request
 from werkzeug.utils import secure_filename
 import mistapi
 
-from parser.cisco_parser import CiscoConfigParser, classify_interface
+from parser.cisco_parser import CiscoConfigParser, classify_interface, subnet_mask_to_cidr
 from parser.address_parser import parse_snmp_location, ParsedAddress
 from mist import MistConnection, MistSiteManager, MistTemplateManager, MistProfileManager, MistAuditManager
 from mist.profile_manager import sanitize_hub_profile_name
@@ -421,6 +421,406 @@ def check_template_wan_variables(template: dict) -> dict:
         "wan_var_names": wan_var_names,
         "port_config_keys": port_keys
     }
+
+
+
+def extract_static_routes(parsed_data: dict) -> list[dict]:
+    """Extract static routes from parsed config with variable naming.
+    
+    Converts destination/mask to CIDR format and assigns variable names
+    for use as site variables and template references.
+    
+    Routes are grouped by VRF:
+    - Default VRF routes -> extra_routes
+    - Named VRF routes -> vrf_instances.<name>.extra_routes
+    
+    Args:
+        parsed_data: Parsed config dictionary with static_routes list
+    
+    Returns:
+        List of route dicts with variable names, sorted by VRF then destination.
+    """
+    static_routes = parsed_data.get("static_routes", [])
+    if not static_routes:
+        return []
+    
+    result = []
+    route_index = 1
+    
+    for route in static_routes:
+        destination = route.get("destination", "")
+        mask = route.get("mask", "")
+        next_hop = route.get("next_hop", "")
+        
+        if not destination or not next_hop:
+            continue
+        
+        # Convert mask to CIDR prefix
+        cidr_prefix = subnet_mask_to_cidr(mask) if mask else 0
+        cidr = f"{destination}/{cidr_prefix}"
+        
+        entry = {
+            "destination": destination,
+            "mask": mask,
+            "cidr": cidr,
+            "next_hop": next_hop,
+            "interface": route.get("interface", ""),
+            "vrf": route.get("vrf", ""),
+            "name": route.get("name", ""),
+            "distance": route.get("distance", 1),
+            "route_var_name": f"route{route_index}"
+        }
+        result.append(entry)
+        route_index += 1
+    
+    # Sort by VRF (default first) then by destination
+    result.sort(key=lambda route: (route["vrf"], route["cidr"]))
+    
+    # Reassign variable names after sorting
+    for index, route in enumerate(result, 1):
+        route["route_var_name"] = f"route{index}"
+    
+    return result
+
+
+def extract_lan_interfaces(parsed_data: dict, min_confidence: float = 0.5) -> list[dict]:
+    """Extract detected LAN interfaces from parsed config for network/VLAN creation.
+    
+    Filters interfaces classified as LAN with confidence above threshold.
+    Cross-references with VLAN definitions for names. Includes HSRP VIP
+    and DHCP helper addresses for each interface.
+    
+    Args:
+        parsed_data: Parsed config dictionary with classified interfaces
+        min_confidence: Minimum classification_confidence to include (default 0.5)
+    
+    Returns:
+        List of LAN interface dicts with variable names, containing:
+        - name: Original Cisco interface name (e.g., "Vlan200")
+        - description: Interface description
+        - ip_address: Interface IP address
+        - subnet_mask: Subnet mask
+        - cidr_prefix: CIDR prefix length (e.g., "24")
+        - vlan_id: VLAN ID (from interface name, encap, or switchport)
+        - vlan_name: VLAN name from VLAN definitions
+        - vrf: VRF if any
+        - helper_addresses: DHCP relay server list
+        - shutdown: Admin state
+        - hsrp_vip: HSRP virtual IP (first group VIP if present)
+        - hsrp_priority: HSRP priority
+        - hsrp_groups: All HSRP groups
+        - lan_var_name: Variable name (e.g., "lan1")
+    """
+    interfaces = parsed_data.get("interfaces", [])
+    vlans = parsed_data.get("vlans", [])
+    
+    # Build VLAN name lookup
+    vlan_lookup = {}
+    for vlan in vlans:
+        vlan_id = vlan.get("vlan_id", 0)
+        if vlan_id > 0:
+            vlan_lookup[vlan_id] = vlan.get("name", "")
+    
+    result = []
+    
+    for interface in interfaces:
+        role = interface.get("interface_role", "")
+        if role != "lan":
+            continue
+        
+        confidence = interface.get("classification_confidence", 0)
+        if confidence < min_confidence:
+            continue
+        
+        name = interface.get("name", "")
+        ip_address = interface.get("ip_address", "")
+        
+        # Skip interfaces without IP addresses (pure L2)
+        if not ip_address:
+            continue
+        
+        # Skip shutdown interfaces
+        if interface.get("shutdown", False):
+            continue
+        
+        # Determine VLAN ID from multiple sources
+        vlan_id = 0
+        name_lower = name.lower()
+        if name_lower.startswith("vlan"):
+            # Extract VLAN ID from interface name (e.g., "Vlan200" -> 200)
+            try:
+                vlan_id = int(name[4:])
+            except ValueError:
+                pass
+        if vlan_id == 0:
+            vlan_id = interface.get("encap_vlan_id", 0)
+        if vlan_id == 0:
+            vlan_id = interface.get("switchport_access_vlan", 0)
+        
+        # Get VLAN name from definitions
+        vlan_name = vlan_lookup.get(vlan_id, "")
+        if not vlan_name:
+            vlan_name = interface.get("description", "")
+        
+        # Get HSRP info (use first group with a VIP)
+        hsrp_groups = interface.get("hsrp_groups", [])
+        hsrp_vip = ""
+        hsrp_priority = 100
+        for group in hsrp_groups:
+            if group.get("vip"):
+                hsrp_vip = group["vip"]
+                hsrp_priority = group.get("priority", 100)
+                break
+        
+        # Convert subnet mask to CIDR
+        subnet_mask = interface.get("subnet_mask", "")
+        cidr_prefix = str(subnet_mask_to_cidr(subnet_mask)) if subnet_mask else ""
+        
+        entry = {
+            "name": name,
+            "description": interface.get("description", ""),
+            "ip_address": ip_address,
+            "subnet_mask": subnet_mask,
+            "cidr_prefix": cidr_prefix,
+            "vlan_id": vlan_id,
+            "vlan_name": vlan_name,
+            "vrf": interface.get("vrf", ""),
+            "helper_addresses": interface.get("helper_addresses", []),
+            "shutdown": interface.get("shutdown", False),
+            "hsrp_vip": hsrp_vip,
+            "hsrp_priority": hsrp_priority,
+            "hsrp_groups": hsrp_groups,
+            "lan_var_name": ""  # Assigned below
+        }
+        result.append(entry)
+    
+    # Sort by VLAN ID for consistent ordering
+    result.sort(key=lambda interface: interface.get("vlan_id", 0))
+    
+    # Assign variable names
+    for index, interface in enumerate(result, 1):
+        interface["lan_var_name"] = f"lan{index}"
+    
+    return result
+
+
+def extract_dhcp_pools(parsed_data: dict) -> list[dict]:
+    """Extract DHCP pools from parsed config with usable IP range computation.
+    
+    Parses excluded-address ranges to compute the first usable IP start
+    and last usable IP end for each pool. Assigns variable names for
+    site variables and template references.
+    
+    Args:
+        parsed_data: Parsed config dictionary with dhcp_pools list
+    
+    Returns:
+        List of DHCP pool dicts with computed IP ranges and variable names.
+    """
+    dhcp_pools = parsed_data.get("dhcp_pools", [])
+    if not dhcp_pools:
+        return []
+    
+    result = []
+    pool_index = 1
+    
+    for pool in dhcp_pools:
+        network = pool.get("network", "")
+        subnet_mask = pool.get("subnet_mask", "")
+        gateway = pool.get("default_router", "")
+        
+        if not network:
+            continue
+        
+        # Convert subnet mask to CIDR prefix
+        cidr_prefix = str(subnet_mask_to_cidr(subnet_mask)) if subnet_mask else ""
+        
+        # Parse excluded address ranges
+        raw_excluded = pool.get("excluded_addresses", [])
+        excluded_ranges = []
+        for exclusion in raw_excluded:
+            # Format: "IP1 - IP2" or single "IP1"
+            if " - " in exclusion:
+                parts = exclusion.split(" - ", 1)
+                excluded_ranges.append({"start": parts[0].strip(), "end": parts[1].strip()})
+            else:
+                excluded_ranges.append({"start": exclusion.strip(), "end": exclusion.strip()})
+        
+        # Compute usable IP range (first IP after exclusions, last IP before exclusions)
+        ip_start, ip_end = _compute_usable_range(network, subnet_mask, excluded_ranges)
+        
+        entry = {
+            "name": pool.get("name", ""),
+            "vrf": pool.get("vrf", ""),
+            "network": network,
+            "subnet_mask": subnet_mask,
+            "cidr_prefix": cidr_prefix,
+            "gateway": gateway,
+            "dns_servers": pool.get("dns_servers", []),
+            "excluded_ranges": excluded_ranges,
+            "ip_start": ip_start,
+            "ip_end": ip_end,
+            "dhcp_var_name": f"dhcp{pool_index}"
+        }
+        result.append(entry)
+        pool_index += 1
+    
+    return result
+
+
+def _compute_usable_range(
+    network: str,
+    subnet_mask: str,
+    excluded_ranges: list[dict]
+) -> tuple[str, str]:
+    """Compute the first and last usable IP addresses after exclusions.
+    
+    Args:
+        network: Network address (e.g., "192.168.100.0")
+        subnet_mask: Subnet mask (e.g., "255.255.255.0")
+        excluded_ranges: List of {"start": ip, "end": ip} dicts
+    
+    Returns:
+        Tuple of (ip_start, ip_end) strings. Empty strings if computation fails.
+    """
+    if not network or not subnet_mask:
+        return ("", "")
+    
+    try:
+        # Convert network to integer
+        net_parts = [int(octet) for octet in network.split(".")]
+        mask_parts = [int(octet) for octet in subnet_mask.split(".")]
+        
+        net_int = (net_parts[0] << 24) | (net_parts[1] << 16) | (net_parts[2] << 8) | net_parts[3]
+        mask_int = (mask_parts[0] << 24) | (mask_parts[1] << 16) | (mask_parts[2] << 8) | mask_parts[3]
+        
+        # Network range: first host to last host
+        first_host = net_int + 1
+        broadcast = net_int | (~mask_int & 0xFFFFFFFF)
+        last_host = broadcast - 1
+        
+        if first_host > last_host:
+            return ("", "")
+        
+        # Convert excluded ranges to integer ranges
+        excluded_ints = []
+        for exclusion in excluded_ranges:
+            start_parts = [int(octet) for octet in exclusion["start"].split(".")]
+            end_parts = [int(octet) for octet in exclusion["end"].split(".")]
+            start_int = (start_parts[0] << 24) | (start_parts[1] << 16) | (start_parts[2] << 8) | start_parts[3]
+            end_int = (end_parts[0] << 24) | (end_parts[1] << 16) | (end_parts[2] << 8) | end_parts[3]
+            excluded_ints.append((start_int, end_int))
+        
+        # Sort exclusions by start address
+        excluded_ints.sort(key=lambda exclusion: exclusion[0])
+        
+        # Find first usable IP (skip past exclusions from the start)
+        ip_start = first_host
+        for exclusion_start, exclusion_end in excluded_ints:
+            if ip_start >= exclusion_start and ip_start <= exclusion_end:
+                ip_start = exclusion_end + 1
+            elif exclusion_start > ip_start:
+                break
+        
+        # Find last usable IP (skip past exclusions from the end)
+        ip_end = last_host
+        for exclusion_start, exclusion_end in reversed(excluded_ints):
+            if ip_end >= exclusion_start and ip_end <= exclusion_end:
+                ip_end = exclusion_start - 1
+            elif exclusion_end < ip_end:
+                break
+        
+        if ip_start > ip_end:
+            return ("", "")
+        
+        # Convert back to dotted notation
+        def int_to_ip(value):
+            return f"{(value >> 24) & 0xFF}.{(value >> 16) & 0xFF}.{(value >> 8) & 0xFF}.{value & 0xFF}"
+        
+        return (int_to_ip(ip_start), int_to_ip(ip_end))
+        
+    except (ValueError, IndexError):
+        return ("", "")
+
+
+def extract_vrf_instances(parsed_data: dict) -> list[dict]:
+    """Extract VRF instances with cross-referenced interfaces, routes, and DHCP pools.
+    
+    Cross-references VRF definitions with:
+    - Interfaces bound to each VRF (vrf forwarding)
+    - Static routes in each VRF (ip route vrf)
+    - DHCP pools in each VRF (vrf in pool)
+    
+    Args:
+        parsed_data: Parsed config dictionary with vrfs, interfaces, 
+                     static_routes, and dhcp_pools
+    
+    Returns:
+        List of VRF instance dicts with associated resources and variable names.
+    """
+    vrfs = parsed_data.get("vrfs", [])
+    if not vrfs:
+        return []
+    
+    interfaces = parsed_data.get("interfaces", [])
+    static_routes = parsed_data.get("static_routes", [])
+    dhcp_pools = parsed_data.get("dhcp_pools", [])
+    
+    result = []
+    vrf_index = 1
+    
+    for vrf in vrfs:
+        vrf_name = vrf.get("name", "")
+        if not vrf_name:
+            continue
+        
+        # Find interfaces bound to this VRF
+        vrf_interfaces = [
+            interface.get("name", "")
+            for interface in interfaces
+            if interface.get("vrf", "") == vrf_name
+        ]
+        
+        # Find static routes in this VRF
+        vrf_routes = [
+            {
+                "destination": route.get("destination", ""),
+                "mask": route.get("mask", ""),
+                "cidr": f"{route.get('destination', '')}/{subnet_mask_to_cidr(route.get('mask', ''))}",
+                "next_hop": route.get("next_hop", ""),
+                "interface": route.get("interface", ""),
+                "name": route.get("name", "")
+            }
+            for route in static_routes
+            if route.get("vrf", "") == vrf_name
+        ]
+        
+        # Find DHCP pools in this VRF
+        vrf_dhcp_pools = [
+            {
+                "name": pool.get("name", ""),
+                "network": pool.get("network", ""),
+                "subnet_mask": pool.get("subnet_mask", ""),
+                "default_router": pool.get("default_router", "")
+            }
+            for pool in dhcp_pools
+            if pool.get("vrf", "") == vrf_name
+        ]
+        
+        entry = {
+            "name": vrf_name,
+            "route_distinguisher": vrf.get("route_distinguisher", ""),
+            "address_families": vrf.get("address_families", []),
+            "description": vrf.get("description", ""),
+            "interfaces": vrf_interfaces,
+            "static_routes": vrf_routes,
+            "dhcp_pools": vrf_dhcp_pools,
+            "vrf_var_name": f"vrf{vrf_index}"
+        }
+        result.append(entry)
+        vrf_index += 1
+    
+    return result
 
 
 def validate_wan_configuration(
@@ -849,6 +1249,21 @@ def convert_config():
     # Extract WAN interfaces with high confidence
     wan_interfaces = extract_wan_interfaces(result, min_confidence=0.7)
     
+    # Extract LAN interfaces, static routes, DHCP pools, and VRF instances
+    lan_interfaces = extract_lan_interfaces(result, min_confidence=0.5)
+    static_routes = extract_static_routes(result)
+    dhcp_pools = extract_dhcp_pools(result)
+    vrf_instances = extract_vrf_instances(result)
+    
+    if lan_interfaces:
+        logger.info(f"Detected {len(lan_interfaces)} LAN interfaces: {[l['name'] for l in lan_interfaces]}")
+    if static_routes:
+        logger.info(f"Detected {len(static_routes)} static routes")
+    if dhcp_pools:
+        logger.info(f"Detected {len(dhcp_pools)} DHCP pools")
+    if vrf_instances:
+        logger.info(f"Detected {len(vrf_instances)} VRF instances: {[v['name'] for v in vrf_instances]}")
+    
     # Check template for WAN variable usage
     wan_variable_info = None
     if gateway_type in ("branch", "standalone") and template_info and template_info.get("exists"):
@@ -925,11 +1340,18 @@ def convert_config():
             "logging_hosts": len(result.get("logging", {}).get("hosts", [])),
             "interfaces": result.get("summary", {}).get("interface_count", 0),
             "static_routes": result.get("summary", {}).get("route_count", 0),
-            "vlans": result.get("summary", {}).get("vlan_count", 0)
+            "vlans": result.get("summary", {}).get("vlan_count", 0),
+            "lan_interfaces": len(lan_interfaces),
+            "dhcp_pools": len(dhcp_pools),
+            "vrf_instances": len(vrf_instances)
         },
         "template_info": template_info,
         "template_comparison": template_comparison,
         "wan_interfaces": wan_interfaces,
+        "lan_interfaces": lan_interfaces,
+        "static_routes_extracted": static_routes,
+        "dhcp_pools_extracted": dhcp_pools,
+        "vrf_instances_extracted": vrf_instances,
         "wan_variable_info": wan_variable_info,
         "wan_validation": wan_validation,
         "parsed_data": result
