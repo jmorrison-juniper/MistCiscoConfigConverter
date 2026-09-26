@@ -7,15 +7,26 @@ README.md
 LICENSE
 *.md
 
+# Development and agent files (the running app does not read them)
+.github/
+.specify/
+specs/
+documentation/
+
+# Container build files
+Containerfile
+compose.yml
+.containerignore
+
 # Environment files
 .env
 .env.*
 !.env.example
 
 # Python cache
-__pycache__/
-*.py[cod]
-*.so
+**/__pycache__/
+**/*.py[cod]
+**/*.so
 .pytest_cache/
 
 # Virtual environments
@@ -26,8 +37,13 @@ venv/
 .vscode/
 .idea/
 
-# Data directory (mounted as volume)
+# Data directories (mounted as volumes; the Containerfile makes empty ones)
 data/
+input/
+output/
+
+# Logs
+**/*.log
 
 # Container artifacts
 *.tar
