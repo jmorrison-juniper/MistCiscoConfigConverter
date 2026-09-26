@@ -1,3 +1,6 @@
+# Podman and Docker both read .dockerignore. Docker does not read
+# .containerignore, so this file keeps .env out of a Docker build too.
+
 # Git
 .git/
 .gitignore
@@ -16,7 +19,7 @@ documentation/
 # Container build files
 Containerfile
 compose.yml
-.containerignore
+.dockerignore
 
 # Environment files
 .env
