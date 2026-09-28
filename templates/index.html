@@ -507,6 +507,216 @@
             if (sections.access_lists && sections.access_lists.length > 0) {
                 addSection('Access Lists', sections.access_lists);
             }
+
+            // --- Extracted Data Tables (from extraction functions) ---
+            const lanInterfaces = data.lan_interfaces_extracted || [];
+            const staticRoutes = data.static_routes_extracted || [];
+            const dhcpPools = data.dhcp_pools_extracted || [];
+            const vrfInstances = data.vrf_instances_extracted || [];
+
+            if (lanInterfaces.length > 0) {
+                addLanInterfacesTable(lanInterfaces);
+            }
+
+            if (staticRoutes.length > 0) {
+                addStaticRoutesTable(staticRoutes);
+            }
+
+            if (dhcpPools.length > 0) {
+                addDhcpPoolsTable(dhcpPools);
+            }
+
+            if (vrfInstances.length > 0) {
+                addVrfInstancesTable(vrfInstances);
+            }
+        }
+
+        // --- Extracted Data Table Builders ---
+
+        function addLanInterfacesTable(lanInterfaces) {
+            const section = document.createElement('details');
+            section.className = 'config-section';
+            section.open = true;
+
+            const summary = document.createElement('summary');
+            summary.textContent = `Extracted LAN Interfaces (${lanInterfaces.length})`;
+            section.appendChild(summary);
+
+            let html = '<div class="table-wrapper"><table class="data-table">';
+            html += '<thead><tr>';
+            html += '<th>Var</th><th>Interface</th><th>VLAN</th><th>VLAN Name</th>';
+            html += '<th>IP Address</th><th>CIDR</th><th>HSRP VIP</th>';
+            html += '<th>VRF</th><th>Type</th><th>Mist Network</th>';
+            html += '</tr></thead><tbody>';
+
+            lanInterfaces.forEach(lan => {
+                const typeBadge = lan.is_guest
+                    ? '<span class="badge badge-guest">Guest</span>'
+                    : '<span class="badge badge-internal">Internal</span>';
+                const vrfBadge = lan.vrf
+                    ? `<span class="badge badge-vrf">${lan.vrf}</span>`
+                    : '<span class="text-muted">-</span>';
+                const hsrp = lan.hsrp_vip || '<span class="text-muted">-</span>';
+                const helpers = lan.helper_addresses && lan.helper_addresses.length > 0
+                    ? ` title="DHCP Helpers: ${lan.helper_addresses.join(', ')}"`
+                    : '';
+
+                html += `<tr${helpers}>`;
+                html += `<td>${lan.lan_var_name}</td>`;
+                html += `<td>${lan.name}</td>`;
+                html += `<td>${lan.vlan_id || '-'}</td>`;
+                html += `<td>${lan.vlan_name || '<span class="text-muted">-</span>'}</td>`;
+                html += `<td>${lan.ip_address}</td>`;
+                html += `<td>/${lan.cidr_prefix}</td>`;
+                html += `<td>${hsrp}</td>`;
+                html += `<td>${vrfBadge}</td>`;
+                html += `<td>${typeBadge}</td>`;
+                html += `<td>${lan.mist_network_name}</td>`;
+                html += '</tr>';
+            });
+
+            html += '</tbody></table></div>';
+
+            const content = document.createElement('div');
+            content.innerHTML = html;
+            section.appendChild(content);
+            resultSections.appendChild(section);
+        }
+
+        function addStaticRoutesTable(routes) {
+            const section = document.createElement('details');
+            section.className = 'config-section';
+            section.open = true;
+
+            const summary = document.createElement('summary');
+            summary.textContent = `Extracted Static Routes (${routes.length})`;
+            section.appendChild(summary);
+
+            // Group routes by VRF
+            const vrfGroups = {};
+            routes.forEach(route => {
+                const vrf = route.vrf || '(default)';
+                if (!vrfGroups[vrf]) vrfGroups[vrf] = [];
+                vrfGroups[vrf].push(route);
+            });
+
+            let html = '<div class="table-wrapper"><table class="data-table">';
+            html += '<thead><tr>';
+            html += '<th>Var</th><th>Destination (CIDR)</th><th>Next Hop</th>';
+            html += '<th>Interface</th><th>Distance</th><th>Name</th>';
+            html += '</tr></thead><tbody>';
+
+            Object.keys(vrfGroups).forEach(vrf => {
+                if (Object.keys(vrfGroups).length > 1 || vrf !== '(default)') {
+                    const vrfLabel = vrf === '(default)' ? 'Default VRF' : `VRF: ${vrf}`;
+                    html += `<tr class="vrf-group-header"><td colspan="6">${vrfLabel}</td></tr>`;
+                }
+                vrfGroups[vrf].forEach(route => {
+                    html += '<tr>';
+                    html += `<td>${route.route_var_name}</td>`;
+                    html += `<td>${route.cidr}</td>`;
+                    html += `<td>${route.next_hop}</td>`;
+                    html += `<td>${route.interface || '<span class="text-muted">-</span>'}</td>`;
+                    html += `<td>${route.distance || 1}</td>`;
+                    html += `<td>${route.name || '<span class="text-muted">-</span>'}</td>`;
+                    html += '</tr>';
+                });
+            });
+
+            html += '</tbody></table></div>';
+
+            const content = document.createElement('div');
+            content.innerHTML = html;
+            section.appendChild(content);
+            resultSections.appendChild(section);
+        }
+
+        function addDhcpPoolsTable(pools) {
+            const section = document.createElement('details');
+            section.className = 'config-section';
+            section.open = true;
+
+            const summary = document.createElement('summary');
+            summary.textContent = `Extracted DHCP Pools (${pools.length})`;
+            section.appendChild(summary);
+
+            let html = '<div class="table-wrapper"><table class="data-table">';
+            html += '<thead><tr>';
+            html += '<th>Var</th><th>Pool Name</th><th>Network</th><th>Gateway</th>';
+            html += '<th>Usable Range</th><th>DNS Servers</th><th>VRF</th>';
+            html += '</tr></thead><tbody>';
+
+            pools.forEach(pool => {
+                const network = pool.network
+                    ? `${pool.network}/${pool.cidr_prefix}`
+                    : '<span class="text-muted">-</span>';
+                const usableRange = pool.ip_start && pool.ip_end
+                    ? `${pool.ip_start} - ${pool.ip_end}`
+                    : '<span class="text-muted">-</span>';
+                const dns = pool.dns_servers && pool.dns_servers.length > 0
+                    ? pool.dns_servers.join(', ')
+                    : '<span class="text-muted">-</span>';
+                const vrfBadge = pool.vrf
+                    ? `<span class="badge badge-vrf">${pool.vrf}</span>`
+                    : '<span class="badge badge-default">default</span>';
+
+                html += '<tr>';
+                html += `<td>${pool.dhcp_var_name}</td>`;
+                html += `<td>${pool.name}</td>`;
+                html += `<td>${network}</td>`;
+                html += `<td>${pool.gateway || '<span class="text-muted">-</span>'}</td>`;
+                html += `<td>${usableRange}</td>`;
+                html += `<td>${dns}</td>`;
+                html += `<td>${vrfBadge}</td>`;
+                html += '</tr>';
+            });
+
+            html += '</tbody></table></div>';
+
+            const content = document.createElement('div');
+            content.innerHTML = html;
+            section.appendChild(content);
+            resultSections.appendChild(section);
+        }
+
+        function addVrfInstancesTable(vrfInstances) {
+            const section = document.createElement('details');
+            section.className = 'config-section';
+            section.open = true;
+
+            const summary = document.createElement('summary');
+            summary.textContent = `Extracted VRF Instances (${vrfInstances.length})`;
+            section.appendChild(summary);
+
+            let html = '<div class="table-wrapper"><table class="data-table">';
+            html += '<thead><tr>';
+            html += '<th>Var</th><th>VRF Name</th><th>RD</th>';
+            html += '<th>Interfaces</th><th>Routes</th><th>DHCP Pools</th>';
+            html += '</tr></thead><tbody>';
+
+            vrfInstances.forEach(vrf => {
+                const interfaces = vrf.interfaces && vrf.interfaces.length > 0
+                    ? vrf.interfaces.join(', ')
+                    : '<span class="text-muted">none</span>';
+                const routeCount = vrf.static_routes ? vrf.static_routes.length : 0;
+                const dhcpCount = vrf.dhcp_pools ? vrf.dhcp_pools.length : 0;
+
+                html += '<tr>';
+                html += `<td>${vrf.vrf_var_name}</td>`;
+                html += `<td>${vrf.name}</td>`;
+                html += `<td>${vrf.route_distinguisher || '<span class="text-muted">-</span>'}</td>`;
+                html += `<td>${interfaces}</td>`;
+                html += `<td>${routeCount}</td>`;
+                html += `<td>${dhcpCount}</td>`;
+                html += '</tr>';
+            });
+
+            html += '</tbody></table></div>';
+
+            const content = document.createElement('div');
+            content.innerHTML = html;
+            section.appendChild(content);
+            resultSections.appendChild(section);
         }
 
         function addSection(title, data) {
@@ -1059,6 +1269,145 @@
                     
                     confirmHtml += `</div>`; // close confirm-section
                 }
+            }
+            
+            // --- LAN Networks / Services Preview ---
+            const networkPreview = proposed.network_preview || [];
+            const lanInterfaces = proposed.lan_interfaces || [];
+            
+            if (networkPreview.length > 0) {
+                confirmHtml += `
+                <div class="confirm-section">
+                    <h4>LAN Networks & Services (${networkPreview.length})</h4>
+                    <div class="config-comparison">
+                `;
+                
+                networkPreview.forEach(preview => {
+                    const typeBadge = preview.is_guest
+                        ? '<span class="badge badge-guest" style="margin-left:0.5rem;">Guest</span>'
+                        : '<span class="badge badge-internal" style="margin-left:0.5rem;">Internal</span>';
+                    
+                    let actionClass = 'update-item';
+                    let actionLabel = 'CREATE';
+                    if (preview.network_action === 'skip') {
+                        actionClass = 'success-item';
+                        actionLabel = 'EXISTS';
+                    }
+                    
+                    const serviceStatus = preview.service_exists ? 'EXISTS' : 'CREATE';
+                    
+                    confirmHtml += `
+                    <div class="comparison-item ${actionClass}">
+                        <div class="comparison-details">
+                            <span class="detail-row">
+                                <strong>${preview.mist_network_name}</strong>${typeBadge}
+                                - ${preview.interface_name} (VLAN ${preview.vlan_id || '-'})
+                            </span>
+                            <span class="detail-row secondary">
+                                Site Values: ${preview.subnet} | Network: ${actionLabel} | Service: ${serviceStatus}
+                            </span>
+                            <span class="detail-row secondary">
+                                Variables: ${preview.subnet_var || ''} | ${preview.vlan_var || ''}
+                            </span>
+                            ${preview.network_action !== 'create' ? `<span class="detail-row secondary">${preview.network_reason}</span>` : ''}
+                        </div>
+                    </div>
+                    `;
+                });
+                
+                confirmHtml += `</div></div>`;
+            }
+            
+            // --- Static Routes Summary ---
+            const staticRoutes = proposed.static_routes_extracted || [];
+            if (staticRoutes.length > 0) {
+                confirmHtml += `
+                <div class="confirm-section">
+                    <h4>Static Routes (${staticRoutes.length})</h4>
+                    <div class="config-comparison">
+                        <div class="comparison-item update-item">
+                            <div class="comparison-details">
+                `;
+                
+                // Group by VRF for compact display
+                const routesByVrf = {};
+                staticRoutes.forEach(route => {
+                    const vrf = route.vrf || '(default)';
+                    if (!routesByVrf[vrf]) routesByVrf[vrf] = [];
+                    routesByVrf[vrf].push(route);
+                });
+                
+                Object.keys(routesByVrf).forEach(vrf => {
+                    const count = routesByVrf[vrf].length;
+                    const vrfLabel = vrf === '(default)' ? 'Default VRF' : `VRF ${vrf}`;
+                    confirmHtml += `<span class="detail-row"><strong>${vrfLabel}:</strong> ${count} route(s)</span>`;
+                    routesByVrf[vrf].slice(0, 5).forEach(route => {
+                        confirmHtml += `<span class="detail-row secondary">${route.cidr} -> ${route.next_hop}</span>`;
+                    });
+                    if (count > 5) {
+                        confirmHtml += `<span class="detail-row secondary">... and ${count - 5} more</span>`;
+                    }
+                });
+                
+                confirmHtml += `
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                `;
+            }
+            
+            // --- DHCP Pools Summary ---
+            const dhcpPools = proposed.dhcp_pools_extracted || [];
+            if (dhcpPools.length > 0) {
+                confirmHtml += `
+                <div class="confirm-section">
+                    <h4>DHCP Pools (${dhcpPools.length})</h4>
+                    <div class="config-comparison">
+                `;
+                
+                dhcpPools.forEach(pool => {
+                    const network = pool.network ? `${pool.network}/${pool.cidr_prefix}` : '-';
+                    const vrfBadge = pool.vrf
+                        ? `<span class="badge badge-vrf" style="margin-left:0.5rem;">${pool.vrf}</span>`
+                        : '';
+                    confirmHtml += `
+                    <div class="comparison-item update-item">
+                        <div class="comparison-details">
+                            <span class="detail-row"><strong>${pool.name}</strong>${vrfBadge} - ${network}</span>
+                            <span class="detail-row secondary">Gateway: ${pool.gateway || '-'} | Range: ${pool.ip_start || '?'} - ${pool.ip_end || '?'}</span>
+                        </div>
+                    </div>
+                    `;
+                });
+                
+                confirmHtml += `</div></div>`;
+            }
+            
+            // --- VRF Instances Summary ---
+            const vrfInstances = proposed.vrf_instances_extracted || [];
+            if (vrfInstances.length > 0) {
+                confirmHtml += `
+                <div class="confirm-section">
+                    <h4>VRF Instances (${vrfInstances.length})</h4>
+                    <div class="config-comparison">
+                `;
+                
+                vrfInstances.forEach(vrf => {
+                    const intfCount = vrf.interfaces ? vrf.interfaces.length : 0;
+                    const routeCount = vrf.static_routes ? vrf.static_routes.length : 0;
+                    const dhcpCount = vrf.dhcp_pools ? vrf.dhcp_pools.length : 0;
+                    confirmHtml += `
+                    <div class="comparison-item update-item">
+                        <div class="comparison-details">
+                            <span class="detail-row"><strong>${vrf.name}</strong> (RD: ${vrf.route_distinguisher || '-'})</span>
+                            <span class="detail-row secondary">Interfaces: ${intfCount} | Routes: ${routeCount} | DHCP Pools: ${dhcpCount}</span>
+                        </div>
+                    </div>
+                    `;
+                });
+                
+                confirmHtml += `</div></div>`;
             }
             
             confirmDetails.innerHTML = confirmHtml;

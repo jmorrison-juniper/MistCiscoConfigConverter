@@ -469,6 +469,341 @@ class MistTemplateManager:
             self._logger.error(f"Error adding WAN ports to template: {error}")
             return None
 
+    def add_lan_network_ports(
+        self,
+        template_id: str,
+        lan_interfaces: list[dict]
+    ) -> dict | None:
+        """Add LAN interface port_config entries with network references.
+
+        Creates port_config entries keyed by variable references like
+        ``{{lan1}}`` that resolve to the Cisco interface name via site
+        variables.  Each LAN port is linked to its Mist network name.
+
+        Args:
+            template_id: ID of the template to update
+            lan_interfaces: List of extracted LAN interface dicts with keys:
+                - lan_var_name: Variable name (e.g., "lan1")
+                - mist_network_name: Associated Mist network (e.g., "vlan0090")
+                - vlan_id: VLAN ID
+                - ip_address, subnet_mask: IP configuration
+
+        Returns:
+            Updated template dict on success, None on error.
+        """
+        session = self.connection.session
+        if not session:
+            return None
+
+        port_config: dict[str, Any] = {}
+
+        for lan in lan_interfaces:
+            var_name = lan.get("lan_var_name", "")
+            if not var_name:
+                continue
+
+            port_key = "{{" + var_name + "}}"
+            port_entry: dict[str, Any] = {
+                "usage": "lan",
+                "name": "{{" + var_name + "_name}}",
+                "description": "{{" + var_name + "_desc}}",
+                "aggregated": False,
+                "redundant": False,
+                "critical": False,
+                "ip_config": {
+                    "type": "static",
+                    "ip": "{{" + var_name + "_ip}}",
+                    "netmask": "/{{" + var_name + "_netmask}}"
+                },
+                "vlan_id": "{{" + var_name + "_vlan}}"
+            }
+
+            # Link to Mist network by name
+            mist_network = lan.get("mist_network_name", "")
+            if mist_network:
+                port_entry["networks"] = [mist_network]
+
+            port_config[port_key] = port_entry
+
+        if not port_config:
+            self._logger.debug("No LAN interfaces to configure in template")
+            return None
+
+        self._logger.info(
+            f"Adding {len(port_config)} LAN ports to template {template_id}"
+        )
+
+        try:
+            response = mistapi.api.v1.orgs.gatewaytemplates.getOrgGatewayTemplate(
+                session, self.connection.org_id, template_id
+            )
+            if response.status_code != 200:
+                self._logger.error(
+                    f"Failed to get template for LAN port merge: {response.status_code}"
+                )
+                return None
+
+            existing_template = response.data
+            existing_port_config = existing_template.get("port_config", {})
+
+            merged_port_config = {**existing_port_config, **port_config}
+            update_data = {"port_config": merged_port_config}
+
+            response = mistapi.api.v1.orgs.gatewaytemplates.updateOrgGatewayTemplate(
+                session, self.connection.org_id, template_id, update_data
+            )
+            if response.status_code == 200:
+                self._logger.info(
+                    f"Template {template_id} updated with LAN ports: "
+                    f"{list(port_config.keys())}"
+                )
+                return response.data
+            else:
+                self._logger.error(
+                    f"Failed to update template with LAN ports: "
+                    f"{response.status_code}"
+                )
+                return None
+        except Exception as error:
+            self._logger.error(f"Error adding LAN ports to template: {error}")
+            return None
+
+    def add_extra_routes(
+        self,
+        template_id: str,
+        static_routes: list[dict]
+    ) -> dict | None:
+        """Add static routes as extra_routes to the gateway template.
+
+        Routes are added to the top-level ``extra_routes`` for default VRF
+        or under ``vrf_instances.<name>.extra_routes`` for named VRFs.
+
+        Each route uses variable references for the next-hop so it can
+        differ per site.
+
+        Args:
+            template_id: ID of the template to update
+            static_routes: List of extracted route dicts with keys:
+                - cidr: Destination in CIDR (e.g., "10.0.0.0/8")
+                - next_hop: Next hop IP address
+                - vrf: VRF name (empty for default)
+                - route_var_name: Variable name (e.g., "route1")
+
+        Returns:
+            Updated template dict on success, None on error.
+        """
+        session = self.connection.session
+        if not session:
+            return None
+
+        if not static_routes:
+            return None
+
+        # Separate default VRF routes from named VRF routes
+        default_routes: dict[str, dict] = {}
+        vrf_routes: dict[str, dict[str, dict]] = {}
+
+        for route in static_routes:
+            cidr = route.get("cidr", "")
+            var_name = route.get("route_var_name", "")
+            vrf = route.get("vrf", "")
+
+            route_entry = {
+                "via": "{{" + var_name + "_nexthop}}"
+            }
+
+            if vrf:
+                if vrf not in vrf_routes:
+                    vrf_routes[vrf] = {}
+                vrf_routes[vrf][cidr] = route_entry
+            else:
+                default_routes[cidr] = route_entry
+
+        self._logger.info(
+            f"Adding {len(static_routes)} routes to template {template_id} "
+            f"({len(default_routes)} default, "
+            f"{sum(len(routes) for routes in vrf_routes.values())} in VRFs)"
+        )
+
+        try:
+            response = mistapi.api.v1.orgs.gatewaytemplates.getOrgGatewayTemplate(
+                session, self.connection.org_id, template_id
+            )
+            if response.status_code != 200:
+                self._logger.error(
+                    f"Failed to get template for routes merge: "
+                    f"{response.status_code}"
+                )
+                return None
+
+            existing_template = response.data
+            update_data: dict[str, Any] = {}
+
+            # Merge default VRF extra_routes
+            if default_routes:
+                existing_extra = existing_template.get("extra_routes", {})
+                merged_extra = {**existing_extra, **default_routes}
+                update_data["extra_routes"] = merged_extra
+
+            # Merge VRF-specific extra_routes
+            if vrf_routes:
+                existing_vrf_instances = existing_template.get(
+                    "vrf_instances", {}
+                )
+                for vrf_name, routes in vrf_routes.items():
+                    if vrf_name not in existing_vrf_instances:
+                        existing_vrf_instances[vrf_name] = {}
+                    existing_vrf_extra = existing_vrf_instances[vrf_name].get(
+                        "extra_routes", {}
+                    )
+                    existing_vrf_instances[vrf_name]["extra_routes"] = {
+                        **existing_vrf_extra, **routes
+                    }
+                update_data["vrf_instances"] = existing_vrf_instances
+
+            response = mistapi.api.v1.orgs.gatewaytemplates.updateOrgGatewayTemplate(
+                session, self.connection.org_id, template_id, update_data
+            )
+            if response.status_code == 200:
+                self._logger.info(
+                    f"Template {template_id} updated with extra_routes"
+                )
+                return response.data
+            else:
+                self._logger.error(
+                    f"Failed to update template with routes: "
+                    f"{response.status_code}"
+                )
+                return None
+        except Exception as error:
+            self._logger.error(f"Error adding routes to template: {error}")
+            return None
+
+    def add_dhcp_config(
+        self,
+        template_id: str,
+        dhcp_pools: list[dict],
+        lan_interfaces: list[dict]
+    ) -> dict | None:
+        """Add DHCP server configuration to the gateway template.
+
+        Configures ``dhcpd_config`` on the template, mapping each DHCP pool
+        to its corresponding LAN network name.  Uses variable references
+        for pool-specific values (IP range, gateway, DNS).
+
+        Args:
+            template_id: ID of the template to update
+            dhcp_pools: List of extracted DHCP pool dicts
+            lan_interfaces: List of extracted LAN interface dicts (for network
+                name cross-reference by subnet matching)
+
+        Returns:
+            Updated template dict on success, None on error.
+        """
+        session = self.connection.session
+        if not session:
+            return None
+
+        if not dhcp_pools:
+            return None
+
+        # Build subnet-to-network lookup from LAN interfaces
+        subnet_to_network: dict[str, str] = {}
+        for lan in lan_interfaces:
+            ip_address = lan.get("ip_address", "")
+            subnet_mask = lan.get("subnet_mask", "")
+            if ip_address and subnet_mask:
+                try:
+                    ip_parts = [int(o) for o in ip_address.split(".")]
+                    mask_parts = [int(o) for o in subnet_mask.split(".")]
+                    net_parts = [
+                        ip_parts[i] & mask_parts[i] for i in range(4)
+                    ]
+                    network_str = ".".join(str(p) for p in net_parts)
+                    subnet_to_network[network_str] = lan.get(
+                        "mist_network_name", ""
+                    )
+                except (ValueError, IndexError):
+                    pass
+
+        dhcpd_config: dict[str, Any] = {"enabled": True}
+
+        for pool in dhcp_pools:
+            var_name = pool.get("dhcp_var_name", "")
+            network = pool.get("network", "")
+            mist_net = subnet_to_network.get(network, "")
+
+            if not mist_net:
+                self._logger.warning(
+                    f"DHCP pool '{pool.get('name')}' has no matching LAN "
+                    f"network for {network}, skipping"
+                )
+                continue
+
+            pool_config: dict[str, Any] = {
+                "type": "local",
+                "ip_start": "{{" + var_name + "_start}}",
+                "ip_end": "{{" + var_name + "_end}}",
+                "gateway": "{{" + var_name + "_gateway}}",
+                "dns_servers": []
+            }
+
+            # Add DNS servers as variable references
+            dns_servers = pool.get("dns_servers", [])
+            for dns_index in range(len(dns_servers)):
+                pool_config["dns_servers"].append(
+                    "{{" + var_name + f"_dns{dns_index + 1}" + "}}"
+                )
+
+            dhcpd_config[mist_net] = pool_config
+
+        if len(dhcpd_config) <= 1:
+            # Only has "enabled", no actual pools
+            self._logger.debug("No DHCP pools matched LAN networks")
+            return None
+
+        self._logger.info(
+            f"Adding DHCP config for "
+            f"{len(dhcpd_config) - 1} pools to template {template_id}"
+        )
+
+        try:
+            response = mistapi.api.v1.orgs.gatewaytemplates.getOrgGatewayTemplate(
+                session, self.connection.org_id, template_id
+            )
+            if response.status_code != 200:
+                self._logger.error(
+                    f"Failed to get template for DHCP merge: "
+                    f"{response.status_code}"
+                )
+                return None
+
+            existing_template = response.data
+            existing_dhcpd = existing_template.get("dhcpd_config", {})
+            merged_dhcpd = {**existing_dhcpd, **dhcpd_config}
+
+            update_data = {"dhcpd_config": merged_dhcpd}
+
+            response = mistapi.api.v1.orgs.gatewaytemplates.updateOrgGatewayTemplate(
+                session, self.connection.org_id, template_id, update_data
+            )
+            if response.status_code == 200:
+                self._logger.info(
+                    f"Template {template_id} updated with dhcpd_config"
+                )
+                return response.data
+            else:
+                self._logger.error(
+                    f"Failed to update template with DHCP config: "
+                    f"{response.status_code}"
+                )
+                return None
+        except Exception as error:
+            self._logger.error(
+                f"Error adding DHCP config to template: {error}"
+            )
+            return None
+
     def get_or_create_branch_template(self) -> tuple[dict | None, bool]:
         """Get the branch gateway template, creating it if it doesn't exist.
         

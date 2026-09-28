@@ -6,6 +6,7 @@ A web interface for converting Cisco configurations to Juniper Mist format.
 
 import logging
 import os
+import re
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -17,7 +18,7 @@ import mistapi
 
 from parser.cisco_parser import CiscoConfigParser, classify_interface, subnet_mask_to_cidr
 from parser.address_parser import parse_snmp_location, ParsedAddress
-from mist import MistConnection, MistSiteManager, MistTemplateManager, MistProfileManager, MistAuditManager
+from mist import MistConnection, MistSiteManager, MistTemplateManager, MistProfileManager, MistAuditManager, MistNetworkManager
 from mist.profile_manager import sanitize_hub_profile_name
 from mist.template_manager import BRANCH_GATEWAY_TEMPLATE_NAME
 
@@ -57,6 +58,11 @@ def get_profile_manager() -> MistProfileManager:
 def get_audit_manager() -> MistAuditManager:
     """Get MistAuditManager instance."""
     return MistAuditManager(get_mist_connection())
+
+
+def get_network_manager() -> MistNetworkManager:
+    """Get MistNetworkManager instance."""
+    return MistNetworkManager(get_mist_connection())
 
 
 # Configure logging with file and console handlers
@@ -422,7 +428,8 @@ def check_template_wan_variables(template: dict) -> dict:
         "port_config_keys": port_keys
     }
 
-
+
+
 
 def extract_static_routes(parsed_data: dict) -> list[dict]:
     """Extract static routes from parsed config with variable naming.
@@ -483,6 +490,63 @@ def extract_static_routes(parsed_data: dict) -> list[dict]:
     return result
 
 
+# Guest network detection keywords (case-insensitive)
+GUEST_KEYWORDS = re.compile(
+    r"guest|visitor|byod|public.?wifi|hotspot",
+    re.IGNORECASE
+)
+
+
+def classify_guest_network(
+    vlan_name: str,
+    vrf_name: str,
+    description: str,
+    security_zones: list[dict] | None = None,
+    interface_name: str = ""
+) -> dict:
+    """Classify whether a LAN interface belongs to a guest network.
+
+    Checks VLAN name, VRF name, interface description, and associated
+    security zones for guest-related keywords.  Guest networks are excluded
+    from OrgOverlay VPN routing when pushed to Mist.
+
+    Args:
+        vlan_name: VLAN name from definitions (e.g., "GUEST-WIFI")
+        vrf_name: VRF forwarding name (e.g., "GUEST")
+        description: Interface description text
+        security_zones: Parsed security_zones list from config (optional)
+        interface_name: Cisco interface name for zone cross-reference
+
+    Returns:
+        Dict with:
+        - is_guest (bool): True if guest indicators were found
+        - guest_indicators (list[str]): Human-readable reasons
+    """
+    indicators: list[str] = []
+
+    if vlan_name and GUEST_KEYWORDS.search(vlan_name):
+        indicators.append(f"VLAN name contains guest keyword: {vlan_name}")
+
+    if vrf_name and GUEST_KEYWORDS.search(vrf_name):
+        indicators.append(f"VRF name contains guest keyword: {vrf_name}")
+
+    if description and GUEST_KEYWORDS.search(description):
+        indicators.append(f"Description contains guest keyword: {description}")
+
+    # Check security zones - see if the interface is in a guest zone
+    if security_zones and interface_name:
+        for zone in security_zones:
+            zone_name = zone.get("name", "")
+            zone_interfaces = zone.get("interfaces", [])
+            if interface_name in zone_interfaces and GUEST_KEYWORDS.search(zone_name):
+                indicators.append(f"Security zone contains guest keyword: {zone_name}")
+
+    return {
+        "is_guest": len(indicators) > 0,
+        "guest_indicators": indicators
+    }
+
+
 def extract_lan_interfaces(parsed_data: dict, min_confidence: float = 0.5) -> list[dict]:
     """Extract detected LAN interfaces from parsed config for network/VLAN creation.
     
@@ -513,6 +577,7 @@ def extract_lan_interfaces(parsed_data: dict, min_confidence: float = 0.5) -> li
     """
     interfaces = parsed_data.get("interfaces", [])
     vlans = parsed_data.get("vlans", [])
+    security_zones = parsed_data.get("security_zones", [])
     
     # Build VLAN name lookup
     vlan_lookup = {}
@@ -576,20 +641,37 @@ def extract_lan_interfaces(parsed_data: dict, min_confidence: float = 0.5) -> li
         subnet_mask = interface.get("subnet_mask", "")
         cidr_prefix = str(subnet_mask_to_cidr(subnet_mask)) if subnet_mask else ""
         
+        # Classify as guest or internal network
+        description = interface.get("description", "")
+        vrf = interface.get("vrf", "")
+        guest_result = classify_guest_network(
+            vlan_name=vlan_name,
+            vrf_name=vrf,
+            description=description,
+            security_zones=security_zones,
+            interface_name=name
+        )
+        
+        # Generate Mist network name: vlan + 4-digit zero-padded ID
+        mist_network_name = f"vlan{vlan_id:04d}" if vlan_id > 0 else name.lower().replace(" ", "_")
+        
         entry = {
             "name": name,
-            "description": interface.get("description", ""),
+            "description": description,
             "ip_address": ip_address,
             "subnet_mask": subnet_mask,
             "cidr_prefix": cidr_prefix,
             "vlan_id": vlan_id,
             "vlan_name": vlan_name,
-            "vrf": interface.get("vrf", ""),
+            "vrf": vrf,
             "helper_addresses": interface.get("helper_addresses", []),
             "shutdown": interface.get("shutdown", False),
             "hsrp_vip": hsrp_vip,
             "hsrp_priority": hsrp_priority,
             "hsrp_groups": hsrp_groups,
+            "is_guest": guest_result["is_guest"],
+            "guest_indicators": guest_result["guest_indicators"],
+            "mist_network_name": mist_network_name,
             "lan_var_name": ""  # Assigned below
         }
         result.append(entry)
@@ -1313,6 +1395,15 @@ def convert_config():
             )
             preview_warnings.append(warning_msg)
     
+    # Preview network/service creation for LAN interfaces
+    network_preview = []
+    if lan_interfaces:
+        try:
+            network_manager = get_network_manager()
+            network_preview = network_manager.preview_lan_networks(lan_interfaces)
+        except Exception as error:
+            logger.warning(f"Network preview failed (non-fatal): {error}")
+    
     # Build proposed changes
     proposed = {
         "gateway_type": gateway_type,
@@ -1354,6 +1445,7 @@ def convert_config():
         "vrf_instances_extracted": vrf_instances,
         "wan_variable_info": wan_variable_info,
         "wan_validation": wan_validation,
+        "network_preview": network_preview,
         "parsed_data": result
     }
     
@@ -1478,6 +1570,31 @@ def apply_config():
     if wan_interface_vars:
         logger.info(f"Detected WAN interfaces: {wan_interface_vars}")
     
+    # Extract LAN interfaces, static routes, DHCP pools for network/service creation
+    lan_interfaces = extract_lan_interfaces(parsed_data)
+    static_routes = extract_static_routes(parsed_data)
+    dhcp_pools = extract_dhcp_pools(parsed_data)
+    
+    # Create Mist networks and services for each LAN interface
+    lan_network_results: dict = {}
+    if lan_interfaces:
+        try:
+            lan_network_results = get_network_manager().apply_lan_networks(lan_interfaces)
+            apply_results = lan_network_results.get("results", [])
+            created_count = sum(
+                1 for result in apply_results
+                if result.get("network_action") == "created"
+            )
+            skipped_count = sum(
+                1 for result in apply_results
+                if result.get("network_action") == "skipped"
+            )
+            logger.info(
+                f"LAN networks: {created_count} created, {skipped_count} skipped"
+            )
+        except Exception as error:
+            logger.error(f"Failed to create LAN networks/services: {error}")
+    
     # Collect configuration warnings
     config_warnings: list[str] = []
     
@@ -1514,6 +1631,48 @@ def apply_config():
                     wan_interfaces=wan_interface_list,
                     existing_wan_vars=existing_wan_vars
                 )
+            
+            # Add LAN port configuration to branch template
+            if lan_interfaces and gatewaytemplate_id:
+                try:
+                    get_template_manager().add_lan_network_ports(
+                        gatewaytemplate_id, lan_interfaces
+                    )
+                    logger.info(
+                        f"Added {len(lan_interfaces)} LAN port(s) to branch template"
+                    )
+                except Exception as error:
+                    logger.error(
+                        f"Failed to add LAN ports to branch template: {error}"
+                    )
+            
+            # Add static routes to branch template
+            if static_routes and gatewaytemplate_id:
+                try:
+                    get_template_manager().add_extra_routes(
+                        gatewaytemplate_id, static_routes
+                    )
+                    logger.info(
+                        f"Added {len(static_routes)} static route(s) to branch template"
+                    )
+                except Exception as error:
+                    logger.error(
+                        f"Failed to add static routes to branch template: {error}"
+                    )
+            
+            # Add DHCP configuration to branch template
+            if dhcp_pools and gatewaytemplate_id:
+                try:
+                    get_template_manager().add_dhcp_config(
+                        gatewaytemplate_id, dhcp_pools, lan_interfaces
+                    )
+                    logger.info(
+                        f"Added {len(dhcp_pools)} DHCP pool(s) to branch template"
+                    )
+                except Exception as error:
+                    logger.error(
+                        f"Failed to add DHCP config to branch template: {error}"
+                    )
         else:
             logger.warning("Could not get/create branch gateway template, continuing without it")
     
@@ -1571,6 +1730,48 @@ def apply_config():
                     wan_interfaces=wan_interface_list,
                     existing_wan_vars=existing_wan_vars
                 )
+            
+            # Add LAN port configuration to hub profile
+            if lan_interfaces and hub_profile_id:
+                try:
+                    get_profile_manager().add_lan_network_ports(
+                        hub_profile_id, lan_interfaces
+                    )
+                    logger.info(
+                        f"Added {len(lan_interfaces)} LAN port(s) to hub profile"
+                    )
+                except Exception as error:
+                    logger.error(
+                        f"Failed to add LAN ports to hub profile: {error}"
+                    )
+            
+            # Add static routes to hub profile
+            if static_routes and hub_profile_id:
+                try:
+                    get_profile_manager().add_extra_routes(
+                        hub_profile_id, static_routes
+                    )
+                    logger.info(
+                        f"Added {len(static_routes)} static route(s) to hub profile"
+                    )
+                except Exception as error:
+                    logger.error(
+                        f"Failed to add static routes to hub profile: {error}"
+                    )
+            
+            # Add DHCP configuration to hub profile
+            if dhcp_pools and hub_profile_id:
+                try:
+                    get_profile_manager().add_dhcp_config(
+                        hub_profile_id, dhcp_pools, lan_interfaces
+                    )
+                    logger.info(
+                        f"Added {len(dhcp_pools)} DHCP pool(s) to hub profile"
+                    )
+                except Exception as error:
+                    logger.error(
+                        f"Failed to add DHCP config to hub profile: {error}"
+                    )
         else:
             hub_profile_created = False
             logger.warning("Could not get/create hub device profile, continuing without it")
@@ -1594,6 +1795,48 @@ def apply_config():
                     wan_interfaces=wan_interface_list,
                     existing_wan_vars=existing_wan_vars
                 )
+            
+            # Add LAN port configuration to standalone template
+            if lan_interfaces and gatewaytemplate_id:
+                try:
+                    get_template_manager().add_lan_network_ports(
+                        gatewaytemplate_id, lan_interfaces
+                    )
+                    logger.info(
+                        f"Added {len(lan_interfaces)} LAN port(s) to standalone template"
+                    )
+                except Exception as error:
+                    logger.error(
+                        f"Failed to add LAN ports to standalone template: {error}"
+                    )
+            
+            # Add static routes to standalone template
+            if static_routes and gatewaytemplate_id:
+                try:
+                    get_template_manager().add_extra_routes(
+                        gatewaytemplate_id, static_routes
+                    )
+                    logger.info(
+                        f"Added {len(static_routes)} static route(s) to standalone template"
+                    )
+                except Exception as error:
+                    logger.error(
+                        f"Failed to add static routes to standalone template: {error}"
+                    )
+            
+            # Add DHCP configuration to standalone template
+            if dhcp_pools and gatewaytemplate_id:
+                try:
+                    get_template_manager().add_dhcp_config(
+                        gatewaytemplate_id, dhcp_pools, lan_interfaces
+                    )
+                    logger.info(
+                        f"Added {len(dhcp_pools)} DHCP pool(s) to standalone template"
+                    )
+                except Exception as error:
+                    logger.error(
+                        f"Failed to add DHCP config to standalone template: {error}"
+                    )
         else:
             logger.warning("Could not get/create standalone gateway template, continuing without it")
     
@@ -1662,16 +1905,24 @@ def apply_config():
         dns_suffix = [dns_domain_name]
     
     if gateway_type in ("branch", "standalone") and site_id:
-        # Update site with NTP/DNS/Syslog/WAN variables and DNS suffix
-        # Pass full wan_interface_list for detailed site variable creation
-        if ntp_servers or dns_servers or syslog_servers or dns_suffix or wan_interface_list:
+        # Update site with NTP/DNS/Syslog/WAN/LAN variables and DNS suffix
+        # Pass full interface lists for detailed site variable creation
+        has_variables = (
+            ntp_servers or dns_servers or syslog_servers or dns_suffix
+            or wan_interface_list or lan_interfaces or static_routes
+            or dhcp_pools
+        )
+        if has_variables:
             vars_result = get_site_manager().update_site_variables(
                 site_id,
                 ntp_servers=ntp_servers,
                 dns_servers=dns_servers,
                 syslog_servers=syslog_servers,
                 dns_suffix=dns_suffix,
-                wan_interfaces=wan_interface_list
+                wan_interfaces=wan_interface_list,
+                lan_interfaces=lan_interfaces,
+                static_routes=static_routes,
+                dhcp_pools=dhcp_pools
             )
             if vars_result:
                 var_types = []
@@ -1685,6 +1936,12 @@ def apply_config():
                     var_types.append("DNS suffix")
                 if wan_interface_list:
                     var_types.append(f"WAN ({len(wan_interface_list)} interfaces)")
+                if lan_interfaces:
+                    var_types.append(f"LAN ({len(lan_interfaces)} interfaces)")
+                if static_routes:
+                    var_types.append(f"Routes ({len(static_routes)})")
+                if dhcp_pools:
+                    var_types.append(f"DHCP ({len(dhcp_pools)} pools)")
                 logger.info(f"Updated site variables: {', '.join(var_types)}")
             else:
                 logger.warning("Could not update site variables")
@@ -2090,6 +2347,41 @@ def apply_config():
         response_data["config_overrides"] = override_types
         response_data["message"] += f" ({', '.join(override_types)} overrides applied)"
     
+    # Report LAN network/service creation results
+    if lan_network_results:
+        apply_results = lan_network_results.get("results", [])
+        networks_created = sum(
+            1 for result in apply_results
+            if result.get("network_action") == "created"
+        )
+        services_created = sum(
+            1 for result in apply_results
+            if result.get("service_action") == "created"
+        )
+        networks_skipped = sum(
+            1 for result in apply_results
+            if result.get("network_action") == "skipped"
+        )
+        response_data["lan_networks"] = {
+            "created": networks_created,
+            "skipped": networks_skipped,
+            "services_created": services_created,
+            "results": apply_results
+        }
+        if networks_created > 0:
+            response_data["message"] += (
+                f" ({networks_created} network(s) and "
+                f"{services_created} service(s) created)"
+            )
+    
+    # Report LAN ports, routes, DHCP counts for visibility
+    if lan_interfaces:
+        response_data["lan_ports_configured"] = len(lan_interfaces)
+    if static_routes:
+        response_data["static_routes_configured"] = len(static_routes)
+    if dhcp_pools:
+        response_data["dhcp_pools_configured"] = len(dhcp_pools)
+    
     return jsonify(response_data)
 
 
@@ -2164,10 +2456,20 @@ def display_config():
         )
         logger.debug(f"Parse summary: {result['summary']}")
         
+        # Run extraction functions to produce enriched data for display
+        lan_interfaces = extract_lan_interfaces(result, min_confidence=0.5)
+        static_routes = extract_static_routes(result)
+        dhcp_pools = extract_dhcp_pools(result)
+        vrf_instances = extract_vrf_instances(result)
+        
         return jsonify({
             "status": "success",
             "filename": filename,
-            "parsed_data": result
+            "parsed_data": result,
+            "lan_interfaces_extracted": lan_interfaces,
+            "static_routes_extracted": static_routes,
+            "dhcp_pools_extracted": dhcp_pools,
+            "vrf_instances_extracted": vrf_instances
         })
     except Exception as error:
         logger.exception(f"Error parsing config {filename}: {error}")

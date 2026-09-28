@@ -981,6 +981,101 @@ body:has(.poweruser-controls) .mist-status {
 }
 
 /* ============================================
+   EXTRACTED DATA TABLES (Display Only view)
+   ============================================ */
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8125rem;
+    margin-top: 0.5rem;
+}
+
+.data-table th,
+.data-table td {
+    padding: 0.4rem 0.6rem;
+    text-align: left;
+    border-bottom: 1px solid var(--color-border);
+}
+
+.data-table th {
+    color: var(--color-text-secondary);
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    background: var(--color-bg-secondary);
+    position: sticky;
+    top: 0;
+}
+
+.data-table td {
+    color: var(--color-text-primary);
+    font-family: var(--font-mono);
+}
+
+.data-table tr:hover {
+    background: var(--color-bg-secondary);
+}
+
+.data-table .badge {
+    display: inline-block;
+    padding: 0.125rem 0.5rem;
+    border-radius: 3px;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.data-table .badge-guest {
+    background: rgba(240, 173, 78, 0.2);
+    color: var(--color-warning);
+    border: 1px solid var(--color-warning);
+}
+
+.data-table .badge-internal {
+    background: rgba(92, 184, 92, 0.2);
+    color: var(--color-success);
+    border: 1px solid var(--color-success);
+}
+
+.data-table .badge-vrf {
+    background: rgba(91, 192, 222, 0.2);
+    color: var(--color-primary-light);
+    border: 1px solid var(--color-primary-light);
+}
+
+.data-table .badge-default {
+    background: var(--color-bg-secondary);
+    color: var(--color-text-muted);
+    border: 1px solid var(--color-border);
+}
+
+.data-table .text-muted {
+    color: var(--color-text-muted);
+    font-style: italic;
+}
+
+.vrf-group-header {
+    background: var(--color-bg-secondary);
+    font-weight: 600;
+    color: var(--color-primary);
+}
+
+.vrf-group-header td {
+    padding: 0.5rem 0.6rem;
+    font-family: inherit;
+    font-size: 0.8125rem;
+}
+
+.table-wrapper {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+}
+
+/* ============================================
    RESPONSIVE - Mobile First (iPhone/iPad)
    ============================================ */
 
