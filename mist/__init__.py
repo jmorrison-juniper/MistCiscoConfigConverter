@@ -7,6 +7,7 @@ Provides class-based interfaces for Mist cloud operations:
 - MistTemplateManager: Gateway template operations
 - MistProfileManager: Device profile operations (hub gateways)
 - MistAuditManager: Audit log queries and change verification
+- MistNetworkManager: Network and service operations for LAN interfaces
 """
 
 from .connection import MistConnection
@@ -14,6 +15,7 @@ from .site_manager import MistSiteManager
 from .template_manager import MistTemplateManager
 from .profile_manager import MistProfileManager
 from .audit_manager import MistAuditManager
+from .network_manager import MistNetworkManager
 
 __all__ = [
     "MistConnection",
@@ -21,4 +23,5 @@ __all__ = [
     "MistTemplateManager",
     "MistProfileManager",
     "MistAuditManager",
+    "MistNetworkManager",
 ]

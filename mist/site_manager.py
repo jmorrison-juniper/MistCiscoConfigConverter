@@ -647,13 +647,16 @@ class MistSiteManager:
         dns_servers: list[str] | None = None,
         syslog_servers: list[str] | None = None,
         dns_suffix: list[str] | None = None,
-        wan_interfaces: list[dict] | None = None
+        wan_interfaces: list[dict] | None = None,
+        lan_interfaces: list[dict] | None = None,
+        static_routes: list[dict] | None = None,
+        dhcp_pools: list[dict] | None = None
     ) -> bool:
-        """Update site variables for NTP, DNS, Syslog, and WAN interfaces.
+        """Update site variables for NTP, DNS, Syslog, WAN, LAN, routes, DHCP.
         
         Sets site-level variables that can be referenced in gateway templates
         using {{variable}} syntax. Variables are named ntp1, ntp2, dns1, dns2,
-        syslog1, wan1, wan2, wan3_lte, etc.
+        syslog1, wan1, wan2, wan3_lte, lan1, lan2, route1, dhcp1, etc.
         
         For WAN interfaces, creates detailed variables:
         - wan1 = interface name (e.g., "GigabitEthernet0/0/0")
@@ -675,6 +678,30 @@ class MistSiteManager:
         - wan3_lte_user = APN username
         - wan3_lte_pass = APN password
         
+        For LAN interfaces, creates:
+        - lan1 = interface name (e.g., "Vlan200")
+        - lan1_name = vanity name (e.g., "LAN 1")
+        - lan1_desc = description from Cisco config
+        - lan1_ip = IP address
+        - lan1_netmask = prefix length (e.g., "24")
+        - lan1_vlan = VLAN ID
+        
+        For each LAN interface, also creates network-specific variables
+        keyed by the Mist network name (e.g., "vlan0300"):
+        - vlan0300_network = computed network address (e.g., "10.147.29.128")
+        - vlan0300_prefix = prefix length (e.g., "26")
+        - vlan0300_vlan = VLAN ID (e.g., "300")
+        These are referenced by the org-level network and service objects.
+        
+        For static routes, creates:
+        - route1_nexthop = next hop IP address
+        
+        For DHCP pools, creates:
+        - dhcp1_start = first usable IP
+        - dhcp1_end = last usable IP
+        - dhcp1_gateway = default gateway
+        - dhcp1_dns1, dhcp1_dns2 = DNS servers
+        
         Also sets dns_suffix as a direct site setting (not a variable).
         
         Args:
@@ -684,6 +711,9 @@ class MistSiteManager:
             syslog_servers: List of syslog server addresses
             dns_suffix: List of DNS domain suffixes (e.g., ["example.com"])
             wan_interfaces: List of WAN interface dicts with detailed fields
+            lan_interfaces: List of LAN interface dicts from extract_lan_interfaces
+            static_routes: List of route dicts from extract_static_routes
+            dhcp_pools: List of DHCP pool dicts from extract_dhcp_pools
         
         Returns:
             True on success, False on error.
@@ -791,6 +821,118 @@ class MistSiteManager:
                 download_kbps = interface.get("download_kbps", 0)
                 if download_kbps and download_kbps > 0:
                     site_vars[f"{var_name}_download_kbps"] = str(download_kbps)
+        
+        # LAN interface variables (lan1, lan1_ip, lan1_netmask, etc.)
+        if lan_interfaces:
+            for lan in lan_interfaces:
+                var_name = lan.get("lan_var_name", "")
+                if not var_name:
+                    continue
+                
+                # Interface name (e.g., "Vlan200")
+                interface_name = lan.get("name", "")
+                if interface_name:
+                    site_vars[var_name] = interface_name
+                
+                # Vanity name (e.g., "LAN 1")
+                port_number = "".join(
+                    character for character in var_name if character.isdigit()
+                ) or "1"
+                site_vars[f"{var_name}_name"] = f"LAN {port_number}"
+                
+                # Description
+                description = lan.get("description", "")
+                vlan_name = lan.get("vlan_name", "")
+                site_vars[f"{var_name}_desc"] = (
+                    description if description
+                    else vlan_name if vlan_name
+                    else interface_name
+                )
+                
+                # IP address
+                ip_address = lan.get("ip_address", "")
+                if ip_address:
+                    site_vars[f"{var_name}_ip"] = ip_address
+                
+                # Netmask as prefix length (e.g., "24")
+                cidr_prefix = lan.get("cidr_prefix", "")
+                if cidr_prefix:
+                    site_vars[f"{var_name}_netmask"] = cidr_prefix
+                
+                # VLAN ID
+                vlan_id = lan.get("vlan_id", 0)
+                if vlan_id and vlan_id > 0:
+                    site_vars[f"{var_name}_vlan"] = str(vlan_id)
+                
+                # Network-specific variables keyed by Mist network name
+                # These are referenced by the org-level network and service
+                # objects: {{vlan0300_network}}/{{vlan0300_prefix}},
+                # {{vlan0300_vlan}}
+                mist_network_name = lan.get("mist_network_name", "")
+                if mist_network_name:
+                    # Compute network address from host IP and mask
+                    subnet_mask = lan.get("subnet_mask", "")
+                    if ip_address and subnet_mask:
+                        try:
+                            ip_parts = [
+                                int(octet) for octet in ip_address.split(".")
+                            ]
+                            mask_parts = [
+                                int(octet) for octet in subnet_mask.split(".")
+                            ]
+                            network_parts = [
+                                ip_parts[idx] & mask_parts[idx]
+                                for idx in range(4)
+                            ]
+                            network_address = ".".join(
+                                str(part) for part in network_parts
+                            )
+                            site_vars[
+                                f"{mist_network_name}_network"
+                            ] = network_address
+                        except (ValueError, IndexError):
+                            pass
+                    
+                    if cidr_prefix:
+                        site_vars[f"{mist_network_name}_prefix"] = cidr_prefix
+                    
+                    if vlan_id and vlan_id > 0:
+                        site_vars[f"{mist_network_name}_vlan"] = str(vlan_id)
+        
+        # Static route variables (route1_nexthop, etc.)
+        if static_routes:
+            for route in static_routes:
+                var_name = route.get("route_var_name", "")
+                if not var_name:
+                    continue
+                
+                next_hop = route.get("next_hop", "")
+                if next_hop:
+                    site_vars[f"{var_name}_nexthop"] = next_hop
+        
+        # DHCP pool variables (dhcp1_start, dhcp1_end, dhcp1_gateway, dhcp1_dns1)
+        if dhcp_pools:
+            for pool in dhcp_pools:
+                var_name = pool.get("dhcp_var_name", "")
+                if not var_name:
+                    continue
+                
+                ip_start = pool.get("ip_start", "")
+                if ip_start:
+                    site_vars[f"{var_name}_start"] = ip_start
+                
+                ip_end = pool.get("ip_end", "")
+                if ip_end:
+                    site_vars[f"{var_name}_end"] = ip_end
+                
+                gateway = pool.get("gateway", "")
+                if gateway:
+                    site_vars[f"{var_name}_gateway"] = gateway
+                
+                pool_dns = pool.get("dns_servers", [])
+                for dns_index, dns_server in enumerate(pool_dns, 1):
+                    if dns_server:
+                        site_vars[f"{var_name}_dns{dns_index}"] = dns_server
         
         if not site_vars and not dns_suffix:
             self._logger.debug(f"No site variables to update for site {site_id}")

@@ -664,6 +664,308 @@ class MistProfileManager:
             "port_config_keys": port_config_keys
         }
 
+    def add_lan_network_ports(
+        self,
+        profile_id: str,
+        lan_interfaces: list[dict]
+    ) -> dict | None:
+        """Add LAN interface port_config entries to a hub device profile.
+
+        Hub profiles use literal values (not variable references) for IP
+        configuration.  Each LAN port is linked to its Mist network name.
+
+        Args:
+            profile_id: ID of the device profile to update
+            lan_interfaces: List of extracted LAN interface dicts
+
+        Returns:
+            Updated profile dict on success, None on error.
+        """
+        session = self.connection.session
+        if not session:
+            return None
+
+        port_config: dict[str, Any] = {}
+
+        for lan in lan_interfaces:
+            interface_name = lan.get("name", "")
+            if not interface_name:
+                continue
+
+            port_entry: dict[str, Any] = {
+                "usage": "lan",
+                "name": interface_name,
+                "description": lan.get("description", ""),
+                "aggregated": False,
+                "redundant": False,
+                "critical": False,
+                "ip_config": {
+                    "type": "static",
+                    "ip": lan.get("ip_address", ""),
+                    "netmask": f"/{lan.get('cidr_prefix', '')}"
+                }
+            }
+
+            vlan_id = lan.get("vlan_id", 0)
+            if vlan_id:
+                port_entry["vlan_id"] = vlan_id
+
+            mist_network = lan.get("mist_network_name", "")
+            if mist_network:
+                port_entry["networks"] = [mist_network]
+
+            port_config[interface_name] = port_entry
+
+        if not port_config:
+            self._logger.debug("No LAN interfaces to configure in profile")
+            return None
+
+        self._logger.info(
+            f"Adding {len(port_config)} LAN ports to profile {profile_id}"
+        )
+
+        try:
+            response = mistapi.api.v1.orgs.deviceprofiles.getOrgDeviceProfile(
+                session, self.connection.org_id, profile_id
+            )
+            if response.status_code != 200:
+                self._logger.error(
+                    f"Failed to get profile for LAN port merge: "
+                    f"{response.status_code}"
+                )
+                return None
+
+            existing_profile = response.data
+            existing_port_config = existing_profile.get("port_config", {})
+            merged = {**existing_port_config, **port_config}
+
+            update_data = {"port_config": merged}
+            response = mistapi.api.v1.orgs.deviceprofiles.updateOrgDeviceProfile(
+                session, self.connection.org_id, profile_id, update_data
+            )
+            if response.status_code == 200:
+                self._logger.info(
+                    f"Profile {profile_id} updated with LAN ports: "
+                    f"{list(port_config.keys())}"
+                )
+                return response.data
+            else:
+                self._logger.error(
+                    f"Failed to update profile with LAN ports: "
+                    f"{response.status_code}"
+                )
+                return None
+        except Exception as error:
+            self._logger.error(f"Error adding LAN ports to profile: {error}")
+            return None
+
+    def add_extra_routes(
+        self,
+        profile_id: str,
+        static_routes: list[dict]
+    ) -> dict | None:
+        """Add static routes as extra_routes to a hub device profile.
+
+        Hub profiles use literal next-hop values (not variable references).
+
+        Args:
+            profile_id: ID of the device profile to update
+            static_routes: List of extracted route dicts
+
+        Returns:
+            Updated profile dict on success, None on error.
+        """
+        session = self.connection.session
+        if not session:
+            return None
+
+        if not static_routes:
+            return None
+
+        default_routes: dict[str, dict] = {}
+        vrf_routes: dict[str, dict[str, dict]] = {}
+
+        for route in static_routes:
+            cidr = route.get("cidr", "")
+            next_hop = route.get("next_hop", "")
+            vrf = route.get("vrf", "")
+
+            route_entry = {"via": next_hop}
+
+            if vrf:
+                if vrf not in vrf_routes:
+                    vrf_routes[vrf] = {}
+                vrf_routes[vrf][cidr] = route_entry
+            else:
+                default_routes[cidr] = route_entry
+
+        self._logger.info(
+            f"Adding {len(static_routes)} routes to profile {profile_id}"
+        )
+
+        try:
+            response = mistapi.api.v1.orgs.deviceprofiles.getOrgDeviceProfile(
+                session, self.connection.org_id, profile_id
+            )
+            if response.status_code != 200:
+                self._logger.error(
+                    f"Failed to get profile for routes merge: "
+                    f"{response.status_code}"
+                )
+                return None
+
+            existing_profile = response.data
+            update_data: dict[str, Any] = {}
+
+            if default_routes:
+                existing_extra = existing_profile.get("extra_routes", {})
+                update_data["extra_routes"] = {
+                    **existing_extra, **default_routes
+                }
+
+            if vrf_routes:
+                existing_vrf = existing_profile.get("vrf_instances", {})
+                for vrf_name, routes in vrf_routes.items():
+                    if vrf_name not in existing_vrf:
+                        existing_vrf[vrf_name] = {}
+                    existing_vrf_extra = existing_vrf[vrf_name].get(
+                        "extra_routes", {}
+                    )
+                    existing_vrf[vrf_name]["extra_routes"] = {
+                        **existing_vrf_extra, **routes
+                    }
+                update_data["vrf_instances"] = existing_vrf
+
+            response = mistapi.api.v1.orgs.deviceprofiles.updateOrgDeviceProfile(
+                session, self.connection.org_id, profile_id, update_data
+            )
+            if response.status_code == 200:
+                self._logger.info(
+                    f"Profile {profile_id} updated with extra_routes"
+                )
+                return response.data
+            else:
+                self._logger.error(
+                    f"Failed to update profile with routes: "
+                    f"{response.status_code}"
+                )
+                return None
+        except Exception as error:
+            self._logger.error(f"Error adding routes to profile: {error}")
+            return None
+
+    def add_dhcp_config(
+        self,
+        profile_id: str,
+        dhcp_pools: list[dict],
+        lan_interfaces: list[dict]
+    ) -> dict | None:
+        """Add DHCP server configuration to a hub device profile.
+
+        Hub profiles use literal values for DHCP pool settings.
+
+        Args:
+            profile_id: ID of the device profile to update
+            dhcp_pools: List of extracted DHCP pool dicts
+            lan_interfaces: List of extracted LAN interface dicts
+
+        Returns:
+            Updated profile dict on success, None on error.
+        """
+        session = self.connection.session
+        if not session:
+            return None
+
+        if not dhcp_pools:
+            return None
+
+        # Build subnet-to-network lookup
+        subnet_to_network: dict[str, str] = {}
+        for lan in lan_interfaces:
+            ip_address = lan.get("ip_address", "")
+            subnet_mask = lan.get("subnet_mask", "")
+            if ip_address and subnet_mask:
+                try:
+                    ip_parts = [int(o) for o in ip_address.split(".")]
+                    mask_parts = [int(o) for o in subnet_mask.split(".")]
+                    net_parts = [
+                        ip_parts[i] & mask_parts[i] for i in range(4)
+                    ]
+                    network_str = ".".join(str(p) for p in net_parts)
+                    subnet_to_network[network_str] = lan.get(
+                        "mist_network_name", ""
+                    )
+                except (ValueError, IndexError):
+                    pass
+
+        dhcpd_config: dict[str, Any] = {"enabled": True}
+
+        for pool in dhcp_pools:
+            network = pool.get("network", "")
+            mist_net = subnet_to_network.get(network, "")
+
+            if not mist_net:
+                self._logger.warning(
+                    f"DHCP pool '{pool.get('name')}' has no matching LAN "
+                    f"network for {network}, skipping"
+                )
+                continue
+
+            pool_config: dict[str, Any] = {
+                "type": "local",
+                "ip_start": pool.get("ip_start", ""),
+                "ip_end": pool.get("ip_end", ""),
+                "gateway": pool.get("gateway", ""),
+                "dns_servers": pool.get("dns_servers", [])
+            }
+
+            dhcpd_config[mist_net] = pool_config
+
+        if len(dhcpd_config) <= 1:
+            self._logger.debug("No DHCP pools matched LAN networks")
+            return None
+
+        self._logger.info(
+            f"Adding DHCP config for "
+            f"{len(dhcpd_config) - 1} pools to profile {profile_id}"
+        )
+
+        try:
+            response = mistapi.api.v1.orgs.deviceprofiles.getOrgDeviceProfile(
+                session, self.connection.org_id, profile_id
+            )
+            if response.status_code != 200:
+                self._logger.error(
+                    f"Failed to get profile for DHCP merge: "
+                    f"{response.status_code}"
+                )
+                return None
+
+            existing_profile = response.data
+            existing_dhcpd = existing_profile.get("dhcpd_config", {})
+            merged = {**existing_dhcpd, **dhcpd_config}
+
+            update_data = {"dhcpd_config": merged}
+            response = mistapi.api.v1.orgs.deviceprofiles.updateOrgDeviceProfile(
+                session, self.connection.org_id, profile_id, update_data
+            )
+            if response.status_code == 200:
+                self._logger.info(
+                    f"Profile {profile_id} updated with dhcpd_config"
+                )
+                return response.data
+            else:
+                self._logger.error(
+                    f"Failed to update profile with DHCP config: "
+                    f"{response.status_code}"
+                )
+                return None
+        except Exception as error:
+            self._logger.error(
+                f"Error adding DHCP config to profile: {error}"
+            )
+            return None
+
     def create_ha_cluster(
         self,
         site_id: str,

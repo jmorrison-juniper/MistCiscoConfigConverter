@@ -226,6 +226,19 @@ For LTE interfaces (wan_type == "lte"), additional variables are created:
 
 These variables can be referenced in gateway templates using `{{wan1}}`, `{{wan1_ip}}`, `{{wan3_lte_apn}}`, etc.
 
+### Network Site Variables
+Each LAN interface also creates network-specific site variables keyed by the
+Mist network name (e.g., "vlan0300"). These are referenced by the org-level
+network and service objects which use variable references instead of hard-coded
+values:
+- `vlan0300_network` = computed network address (e.g., "10.147.29.128")
+- `vlan0300_prefix` = prefix length (e.g., "26")
+- `vlan0300_vlan` = VLAN ID (e.g., "300")
+
+Org networks use `{{vlan0300_network}}/{{vlan0300_prefix}}` for the subnet field
+and `{{vlan0300_vlan}}` for the VLAN ID field. This allows the same org-level
+network definition to resolve to different values per site.
+
 ## Power User Features
 
 When `POWERUSER=true` is set in `.env`, additional administrative buttons appear in the web UI.

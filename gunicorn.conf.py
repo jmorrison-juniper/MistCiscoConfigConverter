@@ -16,7 +16,9 @@ backlog = 2048
 workers = min(int(os.environ.get("GUNICORN_WORKERS", 4)), 4)
 worker_class = "gevent"
 worker_connections = 1000
-timeout = 30
+# Apply operations make many sequential API calls; 300s prevents premature worker kill
+timeout = 300
+graceful_timeout = 300
 keepalive = 2
 
 # Limit request sizes for security

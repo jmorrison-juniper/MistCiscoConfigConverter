@@ -17,15 +17,22 @@ DEFAULT_TIMEOUT = (30, 120)
 
 
 class TimeoutHTTPAdapter(HTTPAdapter):
-    """HTTP adapter that applies default timeout to all requests."""
-    
+    """HTTP adapter that forces timeout on all requests.
+
+    Uses forced override (not setdefault) to ensure timeout is always
+    applied even if the calling code passes timeout=None.
+    """
+
     def __init__(self, *args, timeout=DEFAULT_TIMEOUT, **kwargs):
         self.timeout = timeout
         super().__init__(*args, **kwargs)
-    
+
     def send(self, request, **kwargs):
-        """Send request with default timeout if not specified."""
-        kwargs.setdefault("timeout", self.timeout)
+        """Send request with forced timeout to prevent indefinite hangs."""
+        # Force override: if timeout is None or missing, apply our default.
+        # This prevents upstream code from accidentally passing timeout=None.
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = self.timeout
         return super().send(request, **kwargs)
 
 
@@ -77,7 +84,14 @@ class MistConnection:
                 timeout_adapter = TimeoutHTTPAdapter()
                 self._session._session.mount("https://", timeout_adapter)
                 self._session._session.mount("http://", timeout_adapter)
-                self._logger.info("Mist API session initialized")
+                # Verify adapter is actually mounted on the requests session
+                active_adapter = self._session._session.get_adapter("https://")
+                adapter_timeout = getattr(active_adapter, "timeout", "NOT SET")
+                self._logger.info(
+                    f"Mist API session initialized "
+                    f"(timeout adapter: {type(active_adapter).__name__}, "
+                    f"timeout: {adapter_timeout})"
+                )
             except Exception as error:
                 self._logger.error(f"Failed to initialize Mist API session: {error}")
                 self._session = None
