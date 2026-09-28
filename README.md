@@ -94,8 +94,9 @@ MistCiscoConfigConverter/
 ## Documentation
 
 - [Cisco to Mist Configuration Mapping](documentation/CISCO_TO_MIST_MAPPING.md) - Terminology conversions and configuration mappings
-- [Mist OpenAPI 3.0 Spec](documentation/mist-api-openapi3yaml.yaml) - Full API reference
-- [Mist OpenAPI 3.1 Spec](documentation/mist-api-openapi31yaml.yaml) - Latest API reference
+- [Mist OpenAPI specification](https://github.com/mistsys/mist_openapi) - Full API reference (OpenAPI 3.1), published by Juniper Mist
+
+The repository does not store a copy of the OpenAPI specification, because the files are larger than 10 MB. Git ignores `documentation/mist-api-openapi*.yaml` and `documentation/mist-api-openapi*.json`. To keep a local copy for reference, download [mist.openapi.yaml](https://github.com/mistsys/mist_openapi/blob/master/mist.openapi.yaml) and save it as `documentation/mist-api-openapi31yaml.yaml`.
 
 ## File Input Methods
 

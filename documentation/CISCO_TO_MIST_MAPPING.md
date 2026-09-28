@@ -719,5 +719,5 @@ interface GigabitEthernet0/0
 
 ## References
 
-- Mist OpenAPI 3.0 Specification: `documentation/mist-api-openapi3yaml.yaml`
-- Mist OpenAPI 3.1 Specification: `documentation/mist-api-openapi31yaml.yaml`
+- Mist OpenAPI 3.1 Specification: [mistsys/mist_openapi](https://github.com/mistsys/mist_openapi). A local copy goes in `documentation/mist-api-openapi31yaml.yaml`, which Git ignores. See the Documentation section of the [README](../README.md#documentation).
+- Mist OpenAPI 3.0 Specification: a local copy only, in `documentation/mist-api-openapi3yaml.yaml`, which Git ignores.
