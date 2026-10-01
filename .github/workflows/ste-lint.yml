@@ -1,0 +1,42 @@
+name: STE Writing Lint
+
+# Grade repository prose against the Simplified Technical English rules. The job
+# fails when a graded file scores below the threshold. Spec Kit files are not
+# graded by this workflow.
+#
+# The shared workflow in misthelper-devtools installs the linter at the pinned
+# commit and grades each file. A change to local Python files therefore does not
+# change this job.
+
+on:
+  pull_request:
+    paths:
+      - "README.md"
+      - "documentation/CISCO_TO_MIST_MAPPING.md"
+      - ".github/copilot-instructions.md"
+      - ".github/workflows/ste-lint.yml"
+  workflow_dispatch:
+
+# WHY this group: a second push to the same pull request must cancel the first
+# grading run. This workflow reports no required check, so a cancelled run
+# blocks no merge.
+concurrency:
+  group: ste-lint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# The job below states the permissions that it needs. The empty map here
+# removes every other permission.
+permissions: {}
+
+jobs:
+  ste-lint:
+    permissions:
+      # The job reads the files that it grades.
+      contents: read
+    uses: jmorrison-juniper/misthelper-devtools/.github/workflows/reusable-ste-lint.yml@b140350ebc40e61b57a3a65731c0df520f143661 # v0.6.0
+    with:
+      files: >-
+        README.md
+        documentation/CISCO_TO_MIST_MAPPING.md
+        .github/copilot-instructions.md
+      min-score: 80
