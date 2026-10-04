@@ -6,7 +6,7 @@ A containerized web application for converting Cisco IOS configurations to Junip
 
 - Python 3.13+
 - Container runtime: Podman or Docker
-- mistapi 0.59.x+
+- mistapi 0.64.x+
 
 ## Quick Start
 
@@ -147,6 +147,9 @@ source .venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
+# Run the offline conversion regression tests
+python -m unittest discover -s tests -v
+
 # Copy environment config
 copy .env.example .env  # Windows
 cp .env.example .env    # Linux/macOS
@@ -199,6 +202,13 @@ Backup files are stored in `output/` with timestamped filenames.
 CC BY-NC 4.0 - See [LICENSE](LICENSE) for details.
 
 ## Changelog
+
+### Dependency and conversion maintenance
+
+- Updated pinned runtime dependencies to current compatible releases.
+- Removed unused Cisco parser packages and declared the directly used `requests` dependency.
+- Corrected handling of non-contiguous subnet masks and global DHCP excluded-address ranges.
+- Added offline conversion regression tests and a Python 3.13 CI workflow.
 
 ### v26.02.19
 

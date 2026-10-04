@@ -5,8 +5,9 @@ Breaks down Cisco configurations into logical sections and extracts
 variables for display and conversion to Juniper Mist format.
 """
 
-import re
+import ipaddress
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -30,13 +31,7 @@ def subnet_mask_to_cidr(mask: str) -> int:
     if not mask:
         return 0
     try:
-        octets = mask.split(".")
-        if len(octets) != 4:
-            return 0
-        binary = "".join(format(int(octet), "08b") for octet in octets)
-        # Count leading 1s
-        cidr = len(binary) - len(binary.lstrip("1"))
-        return cidr
+        return ipaddress.IPv4Network(f"0.0.0.0/{mask}").prefixlen
     except (ValueError, AttributeError):
         return 0
 
@@ -1116,7 +1111,10 @@ class CiscoConfigParser:
                 if current_pool:
                     self.dhcp_pools.append(current_pool)
                 pool_name = stripped.split("ip dhcp pool ", 1)[1]
-                current_pool = DHCPPool(name=pool_name)
+                current_pool = DHCPPool(
+                    name=pool_name,
+                    excluded_addresses=excluded_by_vrf.get("", []).copy()
+                )
                 in_pool = True
             elif in_pool and current_pool:
                 if stripped.startswith("vrf "):
