@@ -64,10 +64,11 @@ except SpecificException as error:
 Use `os.path.join()` or `Path()`, never hardcoded `/` or `\\`
 
 ## Documentation Structure
-- **README.md**: User-facing guide
+- **README.md**: Landing page with What, How, Where, When, Why, and Who
+- **docs/USER_GUIDE.md**: Setup, operation, development, and changelog
 - **requirements.txt**: Python dependencies
-- **documentation/CISCO_TO_MIST_MAPPING.md**: Cisco to Mist terminology and config mapping reference
-- **documentation/mist-api-openapi3yaml.yaml**: Mist OpenAPI 3.0 specification
+- **docs/CISCO_TO_MIST_MAPPING.md**: Cisco to Mist terminology and config mapping reference
+- **docs/mist-api-openapi3yaml.yaml**: Local Mist OpenAPI 3.0 specification (git-ignored)
 - `.env` (git-ignored): Credentials & config
 
 ## Mist Terminology
@@ -75,7 +76,7 @@ Use `os.path.join()` or `Path()`, never hardcoded `/` or `\\`
 - **Switch** = Layer 2/3 switch
 - **AP** = Access Point (cloud-managed, no controller needed)
 
-Refer to `documentation/CISCO_TO_MIST_MAPPING.md` for full conversion mappings.
+Refer to `docs/CISCO_TO_MIST_MAPPING.md` for full conversion mappings.
 
 ## Hardware Type Selection
 
@@ -306,7 +307,7 @@ This ensures the container image includes all code changes. Static files and tem
 2. **Validate early, return early** - NASA/JPL defensive programming
 3. **Test in venv** - Windows 11 local development standard
 4. **Rebuild containers** - Code changes require container rebuild
-5. **Update docs** - README changelog
+5. **Update docs** - Changelog in `docs/USER_GUIDE.md`
 
 ---
 

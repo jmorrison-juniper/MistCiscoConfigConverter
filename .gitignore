@@ -67,3 +67,5 @@ Thumbs.db
 # Large documentation files
 documentation/mist-api-openapi*.json
 documentation/mist-api-openapi*.yaml
+docs/mist-api-openapi*.json
+docs/mist-api-openapi*.yaml
