@@ -182,7 +182,9 @@ flask run --debug
 python app.py
 ```
 
-**Note**: `flask run` uses `http://127.0.0.1:5000` by default. `python app.py` uses port 8000 with debug mode enabled. Use the containerized version for production.
+**Note**: `flask run` uses `http://127.0.0.1:5000` by default. `python app.py` uses port 8000. Debug mode is off by default. Set `FLASK_DEBUG=true` to turn it on for local development only. Use the containerized version for production.
+
+> **Warning**: Do not set `FLASK_DEBUG=true` on a shared host or in a container. The debugger can run code that a browser sends.
 
 ### Production Deployment
 
@@ -221,6 +223,11 @@ Backup files are stored in `output/` with timestamped filenames.
 CC BY-NC 4.0 - See [LICENSE](../LICENSE) for details.
 
 ## Changelog
+
+### Security fixes from CodeQL
+
+- Kept each file name from a request inside `input/` or `output/`.
+- Turned off Flask debug mode by default. Set `FLASK_DEBUG=true` to turn it on.
 
 ### Apply confirmation word
 
