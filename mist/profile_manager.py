@@ -1013,7 +1013,7 @@ class MistProfileManager:
             )
             if response.status_code == 200:
                 self._logger.info(
-                    f"Created HA cluster with nodes: {normalized_macs[0]}, {normalized_macs[1]}"
+                    f"Created HA cluster with {len(normalized_macs)} nodes"  # Log a count, not the MAC addresses.
                 )
                 return {"success": True, "nodes": normalized_macs}
             else:
