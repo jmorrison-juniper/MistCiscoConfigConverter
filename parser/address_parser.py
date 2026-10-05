@@ -194,7 +194,14 @@ def parse_snmp_location(location: str) -> ParsedAddress:
     if parsed.state_code and not parsed.country_code:
         parsed.country_code = "US"
     
-    logger.debug(f"Parsed SNMP location '{location}' -> street='{parsed.street}', "
-                 f"city='{parsed.city}', state='{parsed.state_code}', zip='{parsed.zip_code}'")
+    found_fields = [
+        name for name, present in (
+            ("street", parsed.street is not None and parsed.street != ""),
+            ("city", parsed.city is not None and parsed.city != ""),
+            ("state", parsed.state_code is not None and parsed.state_code != ""),
+            ("zip", parsed.zip_code is not None and parsed.zip_code != ""),
+        ) if present
+    ]  # Name the address parts found, not their values.
+    logger.debug("Parsed SNMP location fields: %s", ", ".join(found_fields) or "none")  # Log no address text.
     
     return parsed

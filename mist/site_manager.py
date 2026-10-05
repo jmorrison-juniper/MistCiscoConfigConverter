@@ -318,7 +318,7 @@ class MistSiteManager:
             "no_reassign": False
         }
         
-        self._logger.debug(f"Assigning devices to site {site_id}: {mac_addresses}")
+        self._logger.debug(f"Assigning {len(mac_addresses)} device(s) to site {site_id}")  # Log a count, not the MAC addresses.
         
         try:
             response = mistapi.api.v1.orgs.inventory.updateOrgInventoryAssignment(
@@ -363,7 +363,7 @@ class MistSiteManager:
             "macs": mac_addresses
         }
         
-        self._logger.debug(f"Unassigning devices from sites: {mac_addresses}")
+        self._logger.debug(f"Unassigning {len(mac_addresses)} device(s) from sites")  # Log a count, not the MAC addresses.
         
         try:
             response = mistapi.api.v1.orgs.inventory.updateOrgInventoryAssignment(
@@ -543,20 +543,20 @@ class MistSiteManager:
                 mac_to_device[mac] = gateway
         
         # Apply overrides to each device
-        for mac in mac_addresses:
+        for index, mac in enumerate(mac_addresses):
             normalized_mac = mac.lower().replace(":", "")
             device = mac_to_device.get(normalized_mac)
             
             if not device:
                 self._logger.warning(
-                    f"Device with MAC {mac} not found at site {site_id}"
-                )
+                    f"Device {index + 1} of {len(mac_addresses)} not found at site {site_id}"
+                )  # Name the list position, not the MAC address.
                 result["error"].append(mac)
                 continue
             
             device_id = device.get("id")
             if not device_id:
-                self._logger.warning(f"Device {mac} has no ID")
+                self._logger.warning(f"Device {index + 1} of {len(mac_addresses)} has no ID")  # Name the list position only.
                 result["error"].append(mac)
                 continue
             
@@ -613,14 +613,14 @@ class MistSiteManager:
             
             if not device:
                 self._logger.warning(
-                    f"Device with MAC {mac} not found at site {site_id}"
-                )
+                    f"Device {index + 1} of {len(mac_addresses)} not found at site {site_id}"
+                )  # Name the list position, not the MAC address.
                 result["error"].append(mac)
                 continue
             
             device_id = device.get("id")
             if not device_id:
-                self._logger.warning(f"Device {mac} has no ID")
+                self._logger.warning(f"Device {index + 1} of {len(mac_addresses)} has no ID")  # Name the list position only.
                 result["error"].append(mac)
                 continue
             

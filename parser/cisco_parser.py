@@ -72,7 +72,7 @@ def decode_cisco_type7(encoded: str) -> str:
             try:
                 byte_val = int(hex_byte, 16)
             except ValueError:
-                logger.debug(f"Invalid hex byte: {hex_byte}")
+                logger.debug("Invalid hex byte in a Type 7 value at offset %d", i)  # Log the offset, not the secret.
                 return encoded
             
             # XOR with key at position (seed + i/2) mod key_length
@@ -1039,9 +1039,9 @@ class CiscoConfigParser:
                     elif password_type in ("5", "8", "9"):
                         # Hashed - cannot decode
                         logger.debug(
-                            f"User '{username}' has Type {password_type} password "
-                            "(not decodable)"
-                        )
+                            "User '%s' has a hashed password that cannot be decoded",
+                            username,
+                        )  # Log no part of the password field.
                     
                     account = LocalAccount(
                         username=username,

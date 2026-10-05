@@ -228,6 +228,7 @@ CC BY-NC 4.0 - See [LICENSE](../LICENSE) for details.
 
 - Kept each file name from a request inside `input/` or `output/`.
 - Turned off Flask debug mode by default. Set `FLASK_DEBUG=true` to turn it on.
+- Removed MAC addresses, password fields, and street addresses from the logs. The logs now give counts and list positions.
 
 ### Apply confirmation word
 

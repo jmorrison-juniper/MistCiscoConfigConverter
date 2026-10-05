@@ -2107,7 +2107,7 @@ def apply_config():
         if mac_addresses:
             if configure_ha and len(mac_addresses) == 2:
                 # Create HA cluster
-                logger.info(f"Creating HA cluster with devices: {mac_addresses}")
+                logger.info(f"Creating HA cluster with {len(mac_addresses)} device(s)")  # Log a count, not the MAC addresses.
                 ha_result = get_profile_manager().create_ha_cluster(
                     site_id, mac_addresses, managed=True
                 )
@@ -2126,11 +2126,11 @@ def apply_config():
                     newly_assigned = assign_result.get("success", [])
                     if newly_assigned:
                         assigned_devices = newly_assigned
-                        logger.info(f"Newly assigned devices: {assigned_devices}")
+                        logger.info(f"Newly assigned {len(assigned_devices)} device(s)")  # Log a count, not the MAC addresses.
                     else:
                         # Empty success list = devices already on this profile
                         assigned_devices = mac_addresses  # Use selected devices for reporting
-                        logger.info(f"Device(s) already using hub profile: {mac_addresses}")
+                        logger.info(f"{len(mac_addresses)} device(s) already use the hub profile")  # Log a count, not the MAC addresses.
                 else:
                     logger.warning("Failed to assign gateway devices to hub profile")
         else:
@@ -2177,7 +2177,7 @@ def apply_config():
             
             # Create HA cluster if requested and 2 devices selected
             if configure_ha and len(mac_addresses) == 2:
-                logger.info(f"Creating HA cluster for branch with devices: {mac_addresses}")
+                logger.info(f"Creating HA cluster for branch with {len(mac_addresses)} device(s)")  # Log a count only.
                 ha_result = get_profile_manager().create_ha_cluster(
                     site_id, mac_addresses, managed=True
                 )
@@ -2229,7 +2229,7 @@ def apply_config():
             
             # Create HA cluster if requested and 2 devices selected
             if configure_ha and len(mac_addresses) == 2:
-                logger.info(f"Creating HA cluster for standalone with devices: {mac_addresses}")
+                logger.info(f"Creating HA cluster for standalone with {len(mac_addresses)} device(s)")  # Log a count only.
                 ha_result = get_profile_manager().create_ha_cluster(
                     site_id, mac_addresses, managed=True
                 )
