@@ -700,6 +700,9 @@ class AccessList:
     entries: list = field(default_factory=list)
 
 
+PARSE_FAILURE_MESSAGE = "The parser stopped on an unexpected error. See the server log for details."  # Safe text for API clients.
+
+
 class CiscoConfigParser:
     """
     Parses Cisco IOS/IOS-XE configurations into structured sections.
@@ -775,8 +778,8 @@ class CiscoConfigParser:
             self._parse_dns()
             self._parse_access_lists()
         except Exception as error:
-            logger.error(f"Parse error: {error}")
-            self.parse_errors.append(str(error))
+            logger.exception(f"Parse error: {error}")  # Keep the traceback in the server log.
+            self.parse_errors.append(PARSE_FAILURE_MESSAGE)  # Report the failure with no exception text.
         
         return self.to_dict()
     
