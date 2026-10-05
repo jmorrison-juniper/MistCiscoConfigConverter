@@ -32,7 +32,7 @@ python -m pip install -r requirements.txt
 | - | - | - |
 | Offline and documentation tests | `python -m unittest discover -s tests -v` | All tests pass |
 | STE documents | `ste-linter --config .ste-linter.toml --min-score 80 README.md docs/*.md AGENTS.md .github/copilot-instructions.md` | Each file scores 80 or higher |
-| Canonical instruction check | `agent-instructions-check --commit d00c9af1fccafe5858b76ad088a22ed8b046f8ae` | `AGENTS.md` matches the canonical file |
+| Canonical instruction check | `agent-instructions-check --commit da02d4c6a2163d1882f2ad25fce80b8ba38304d1` | `AGENTS.md` matches the canonical file |
 
 This repository defines no formatter, type checker, or Python lint command.
 

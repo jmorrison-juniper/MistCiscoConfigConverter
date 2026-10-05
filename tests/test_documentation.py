@@ -22,7 +22,7 @@ class DocumentationTests(unittest.TestCase):
         script = context_script.read_text(encoding="utf-8")  # Check every generated target.
         self.assertEqual(
             digest,
-            "bf6d2bff3074941ecf2132acdfaa01edacdb1e7ef199961a910ebd9937021886",
+            "db663ecdfa28bd6000ca3c658bff22543791c15d3b59a3642ae181dc7c4e6d43",
         )  # Reject a change to the canonical shared rules.
         self.assertIn(".specify/memory/agent-context-*.md", instructions)  # Keep the context location clear.
         protected_targets = re.findall(
