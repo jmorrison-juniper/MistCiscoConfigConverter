@@ -12,7 +12,7 @@ on:
   pull_request:
     paths:
       - "README.md"
-      - "documentation/CISCO_TO_MIST_MAPPING.md"
+      - "docs/**/*.md"
       - ".github/copilot-instructions.md"
       - ".github/workflows/ste-lint.yml"
   workflow_dispatch:
@@ -37,6 +37,8 @@ jobs:
     with:
       files: >-
         README.md
-        documentation/CISCO_TO_MIST_MAPPING.md
+        docs/CISCO_TO_MIST_MAPPING.md
+        docs/USER_GUIDE.md
+        docs/INTERFACE.md
         .github/copilot-instructions.md
       min-score: 80
