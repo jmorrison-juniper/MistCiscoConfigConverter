@@ -59,23 +59,23 @@ NEW_PLAN="$IMPL_PLAN"  # Alias for compatibility with existing code
 AGENT_TYPE="${1:-}"
 
 # Agent-specific file paths  
-CLAUDE_FILE="$REPO_ROOT/CLAUDE.md"
+CLAUDE_FILE="$REPO_ROOT/.specify/memory/agent-context-claude.md" # Keep generated context outside the instruction files.
 GEMINI_FILE="$REPO_ROOT/GEMINI.md"
-COPILOT_FILE="$REPO_ROOT/.github/agents/copilot-instructions.md"
+COPILOT_FILE="$REPO_ROOT/.specify/memory/agent-context-copilot.md" # Keep generated context outside the instruction files.
 CURSOR_FILE="$REPO_ROOT/.cursor/rules/specify-rules.mdc"
 QWEN_FILE="$REPO_ROOT/QWEN.md"
-AGENTS_FILE="$REPO_ROOT/AGENTS.md"
+AGENTS_FILE="$REPO_ROOT/.specify/memory/agent-context-codex.md" # Keep generated context outside the instruction files.
 WINDSURF_FILE="$REPO_ROOT/.windsurf/rules/specify-rules.md"
 KILOCODE_FILE="$REPO_ROOT/.kilocode/rules/specify-rules.md"
 AUGGIE_FILE="$REPO_ROOT/.augment/rules/specify-rules.md"
 ROO_FILE="$REPO_ROOT/.roo/rules/specify-rules.md"
 CODEBUDDY_FILE="$REPO_ROOT/CODEBUDDY.md"
 QODER_FILE="$REPO_ROOT/QODER.md"
-AMP_FILE="$REPO_ROOT/AGENTS.md"
+AMP_FILE="$REPO_ROOT/.specify/memory/agent-context-amp.md" # Keep generated context outside the instruction files.
 SHAI_FILE="$REPO_ROOT/SHAI.md"
-Q_FILE="$REPO_ROOT/AGENTS.md"
+Q_FILE="$REPO_ROOT/.specify/memory/agent-context-q.md" # Keep generated context outside the instruction files.
 AGY_FILE="$REPO_ROOT/.agent/rules/specify-rules.md"
-BOB_FILE="$REPO_ROOT/AGENTS.md"
+BOB_FILE="$REPO_ROOT/.specify/memory/agent-context-bob.md" # Keep generated context outside the instruction files.
 
 # Template file
 TEMPLATE_FILE="$REPO_ROOT/.specify/templates/agent-file-template.md"
@@ -807,4 +807,3 @@ main() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
-

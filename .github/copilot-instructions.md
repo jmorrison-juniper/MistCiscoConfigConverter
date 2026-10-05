@@ -1,315 +1,137 @@
-```instructions
-# AI Agent Instructions
+# MistCiscoConfigConverter agent instructions
 
-## Project Overview
-**Target Audience**: Engineers. Use clear, professional language without jargon. Think Fred Rogers meets NASA/JPL safety standards.
+This file holds rules for `MistCiscoConfigConverter` only. The rules for each
+repository of this owner are in `AGENTS.md` at the repository root. Read
+`AGENTS.md` first. This file adds to it, and it does not hold a copy of a rule
+from it. Where the two files disagree, obey `AGENTS.md` for a writing rule, a
+safety rule, or a security rule.
 
-## Runtime Environment
-- **Python**: 3.13+
-- **Container Runtime**: Podman (primary), Docker (compatible)
-- **WSGI Server**: Gunicorn with gevent workers
-- **API SDK**: mistapi 0.59.x+
+## What this repository is
 
-### Container Notes
-- Use `--format docker` with Podman for HEALTHCHECK support
-- Containerfile is compatible with both Podman and Docker
-- Volume mounts use `:Z` for SELinux compatibility
+MistCiscoConfigConverter is a Python web application for network engineers. It
+converts Cisco IOS and IOS-XE configuration files to Juniper Mist settings. The
+browser shows a proposal before the user applies it. The user guide explains
+local Python use on Windows, macOS, and Linux. Podman and Docker run the
+application in a container.
 
-## Critical Patterns
+## Language and environment
 
-### Safety-First Coding
-```python
-# DESTRUCTIVE operations require explicit confirmation
-confirmation = input("Type 'CONFIRM' to proceed: ")
-if confirmation != "CONFIRM":
-    return  # NASA/JPL: early return on validation failure
+The application uses Python 3.13, Flask, `mistapi` 0.64.0, Gunicorn, and
+gevent. Copy `.env.example` to the ignored `.env` file. Set `MIST_APITOKEN`,
+`MIST_HOST`, `org_id`, and `SECRET_KEY` there. Install the dependencies in a
+virtual environment.
+
+```sh
+python -m venv .venv
+python -m pip install -r requirements.txt
 ```
 
-### Logging Standards
-- **Debug**: Internal state changes, API responses
-- **Info**: User-facing progress messages
-- **Error**: Exception context with full traceback
-- **Never log secrets**: Redact tokens/passwords
-- **ASCII Only**: Replace Unicode with ASCII equivalents
+## Local gates
 
-### Input Validation
-```python
-def validate_input(value: str) -> bool:
-    """All external inputs validated before use"""
-    # Reject path traversal, special chars, etc.
-```
+| Gate | Command | Expected result |
+| - | - | - |
+| Offline and documentation tests | `python -m unittest discover -s tests -v` | All tests pass |
+| STE documents | `ste-linter --config .ste-linter.toml --min-score 80 README.md docs/*.md AGENTS.md .github/copilot-instructions.md` | Each file scores 80 or higher |
+| Canonical instruction check | `agent-instructions-check --commit d00c9af1fccafe5858b76ad088a22ed8b046f8ae` | `AGENTS.md` matches the canonical file |
 
-### File Path Management
-- **All outputs**: `data/` directory (enforced at runtime)
-- Use `os.path.join()` or `Path()`, never hardcoded `/` or `\\`
+This repository defines no formatter, type checker, or Python lint command.
 
-## Coding Conventions
+## Architecture and conventions
 
-### Naming Standards
-- **No abbreviations**: `for device in devices` NOT `for d in devices`
-- **No AI markers**: Never use `...existing code...` or double ellipses
-- **Class-based**: All features organized under semantic class names
+`parser/cisco_parser.py` parses Cisco configurations. `app.py` serves the Flask
+interface and coordinates conversion. The classes in `mist/` call the Mist API.
+`templates/index.html` holds the interface. `static/css/themes.css` holds its
+themes.
 
-### Error Handling
-```python
-# Always handle potential exceptions gracefully
-try:
-    result = perform_operation()
-except SpecificException as error:
-    logging.error(f"Operation failed: {error}")
-    return None
-```
+The converter supports `branch`, `hub`, and `standalone` gateway roles. Branch
+gateways use gateway templates with `type: "spoke"`. Standalone gateways use
+gateway templates with `type: "standalone"`. Hub gateways use device profiles
+with `type: "gateway"`. Hub profiles store NTP and DNS values directly. Branch
+and standalone templates use site variables for those values. SRX is the
+default hardware type. Hub profiles attach to devices. Branch and standalone
+templates attach to sites. SSR does not use the DNS suffix setting.
 
-### Windows Path Compatibility
-Use `os.path.join()` or `Path()`, never hardcoded `/` or `\\`
+WAN and LAN classification uses weighted indicators. The default score
+thresholds are `0.3` for WAN and `-0.3` for LAN. The app includes WAN
+interfaces with confidence of at least `0.7`. Set
+`INTERFACE_WAN_THRESHOLD` or `INTERFACE_LAN_THRESHOLD` to change the score
+thresholds. Tunnel interfaces keep the `tunnel` role and do not enter the WAN
+list. For a hub, warn when a WAN interface uses DHCP. Recommend a static address.
 
-## Documentation Structure
-- **README.md**: Landing page with What, How, Where, When, Why, and Who
-- **docs/USER_GUIDE.md**: Setup, operation, development, and changelog
-- **requirements.txt**: Python dependencies
-- **docs/CISCO_TO_MIST_MAPPING.md**: Cisco to Mist terminology and config mapping reference
-- **docs/mist-api-openapi3yaml.yaml**: Local Mist OpenAPI 3.0 specification (git-ignored)
-- `.env` (git-ignored): Credentials & config
+Normal WAN slots sort by score. Cellular slots sort by interface name after
+normal WAN slots. Each detected cellular interface creates a modem slot and an
+LTE slot. WAN names start at `wan1`. LTE names add `_lte`. The code sets no
+fixed limit on WAN slots.
 
-## Mist Terminology
-- **Gateway** = Router or Firewall (Mist uses "gateway" for all routing/firewall devices)
-- **Switch** = Layer 2/3 switch
-- **AP** = Access Point (cloud-managed, no controller needed)
+The parser reads static, DHCP, PPPoE, and negotiated IP settings. It also reads
+subnet masks, VLAN tags, shutdown state, default gateways, and cellular profile
+data. A cellular profile can set an APN, authentication, username, password,
+PDP type, and SIM slot. The parser decodes Type 7 passwords.
 
-Refer to `docs/CISCO_TO_MIST_MAPPING.md` for full conversion mappings.
+Bandwidth takes these sources in order: interface `bandwidth`, source tunnel
+bandwidth, source tunnel description, then interface description. Description
+speeds support `BDW=upload/download` and common K, M, and G values. The
+`bandwidth_source` value records the selected source.
 
-## Hardware Type Selection
+WAN site variables include the interface name and any available IP, subnet
+prefix, gateway, VLAN, and IP configuration type. LTE variables use `_apn`,
+`_auth`, `_user`, and `_pass` suffixes. Network variables use the Mist network
+name with `_network`, `_prefix`, and `_vlan` suffixes. The template adds upload
+traffic shaping variables. The site manager creates those variables only when
+bandwidth values exist.
 
-### SRX vs SSR Toggle
-- **SRX** (default): Juniper SRX Series (vSRX, SRX300, SRX1500, etc.)
-- **SSR**: Session Smart Router (128T)
+The parser and conversion tests use `unittest`. Keep tests in `tests/`.
+Spec Kit writes generated agent context files under
+`.specify/memory/agent-context-*.md`. Do not use these files as instruction
+files. Keep the README sections `What`, `How`, `Where`, `When`, `Why`, and `Who`.
 
-### Hardware-Specific Settings
-- **DNS Suffix**: Only applies to SRX gateways (SSR does not support this setting)
+## Safety in this repository
 
-## Hub vs Spoke Gateway Configuration
+The app reads Cisco files from `input/`, writes logs to `data/`, and stores
+backups in `output/`. The browser requests confirmation before it sends a
+request to `/api/apply`. That route updates settings in Mist. Power user routes
+require `POWERUSER=true`. Routes that restore, delete, or unassign objects
+require the JSON value
+`"confirmation": "CONFIRM"`. Backup files use timestamped names in `output/`.
+Their prefixes are `service_policies_backup_`, `services_backup_`, and
+`networks_backup_`.
+Power user mode backs up and restores service policies, services, and networks.
+It also deletes services and networks and can unassign or delete templates or
+templated devices. Its API routes use the `/api/poweruser/` prefix.
 
-### Gateway Type Objects
-| Gateway Role | Mist Object | Type Field | Site Attachment |
-|-------------|-------------|------------|-----------------|
-| **Hub** | Device Profile (`deviceprofile_gateway`) | `type: "gateway"` | Device-level |
-| **Branch (Spoke)** | Gateway Template (`gateway_template`) | `type: "spoke"` | Site-level |
-| **Standalone** | Gateway Template (`gateway_template`) | `type: "standalone"` | Site-level |
+## Containers and ports
 
-### Hub-Specific WAN Configuration
-- **Static IP Recommended**: Hubs should use static IP for VPN endpoint stability (spokes need predictable endpoint)
-- **DHCP Warning**: If Cisco config uses DHCP on WAN, display warning when hub type is selected
-- **`wan_ext_ip`**: Hub-only field for NAT traversal (public IP for spokes to reach hub behind NAT)
-- **VPN Path Role**: Set `role: "hub"` in `vpn_paths` configuration
+The Compose service is `converter`. It uses the container name
+`mist-cisco-converter` and publishes port `8000`. Mount `data/`, `input/`, and
+`output/` as volumes. Use `podman-compose up -d` or `docker compose up -d` for
+the local stack. The repository defines no test port range. Pass `--format docker` to a Podman
+build so the image supports `HEALTHCHECK`. Use `:Z` on bind mounts for SELinux
+support. Rebuild the image and restart the running container after a
+configuration, Python, template, or static asset change.
 
-### Variable Usage Difference
-- **Hub (Device Profile)**: Typically uses literal values (IPs, etc.) directly in profile
-- **Spoke (Gateway Template)**: Uses variable references like `{{wan1_ip}}` resolved via site variables
+## Git and GitHub in this repository
 
-## WAN Interface Detection
+Use the `documentation` label for documentation changes. Use `in-progress` to
+mark active work. The repository records its change history in
+`docs/USER_GUIDE.md` under `Changelog`. The `test` workflow check is required
+on `main`. The STE workflow checks the README, the instruction files, and the
+three Markdown files in `docs/`. The other workflow reports stranded branches
+each week. The repository is public, so its standard GitHub-hosted workflow
+runs have no Actions-minute cost. It has no CodeQL workflow, `auto-merge` label,
+or pull request template. Dated changelog headings use `vYY.MM.DD`.
 
-### Classification Rules
-- **Tunnel interfaces** (e.g., Tunnel0, Tunnel100) are **NOT** WAN interfaces - they are logical overlays
-- Tunnel interfaces get `interface_role="tunnel"` with early return from classification
-- WAN classification uses weighted scoring based on interface characteristics
+## Key files
 
-### Cellular Interface Handling
-Each cellular interface requires **TWO** configuration reservations:
-1. **Modem GigE slot** - External 3rd-party cellular modem connection (wan_type="broadband")
-2. **LTE slot** - Built-in Juniper LTE interface (wan_type="lte")
+| File | Purpose |
+| - | - |
+| `app.py` | Flask routes and conversion flow |
+| `parser/cisco_parser.py` | Cisco configuration parser |
+| `mist/` | Mist API managers |
+| `docs/USER_GUIDE.md` | Setup, operation, and change history |
+| `docs/CISCO_TO_MIST_MAPPING.md` | Cisco and Mist configuration mappings |
 
-### Variable Naming Convention
-- Sequential numbering: wan1, wan2, wan3, etc.
-- LTE slots get `_lte` suffix: wan3_lte, wan4_lte
-- No maximum limit on WAN interfaces
+## External resources
 
-### Ordering Rules
-1. GigE WAN interfaces (regular WAN, sorted by wan_score)
-2. (Future: GigE LAN interfaces)
-3. Cellular modem GigE slots (by interface name)
-4. Cellular LTE slots (by interface name, with _lte suffix)
-
-### Data Structures
-- `wan_interface_list`: Full list of WAN interface dicts with metadata
-- Each interface dict contains: `name`, `wan_var_name`, `wan_type`, `is_cellular`, `cellular_slot`, plus all parsed details
-
-### WAN Interface Parsed Details
-Each WAN interface extracts the following from Cisco config:
-- **ip_address**: Static IP if configured
-- **subnet_mask**: Subnet mask for static IPs
-- **ip_config_type**: "static", "dhcp", "pppoe", or "negotiated"
-- **encap_vlan_id**: VLAN ID for subinterface encapsulation (dot1q)
-- **default_gateway**: Next-hop from static routes
-- **shutdown**: True if interface is administratively down (shutdown command)
-- **cellular_profile_id**: ID of cellular data profile attached to this interface
-- **upload_kbps**: Upload bandwidth for traffic shaping (see below)
-- **download_kbps**: Download bandwidth for traffic shaping (see below)
-- **bandwidth_source**: Where bandwidth was derived from
-
-### WAN Bandwidth / Traffic Shaping
-Bandwidth for traffic shaping is extracted from multiple sources in priority order:
-
-1. **Explicit bandwidth command**: `bandwidth <kbps>` on the interface (treated as symmetric)
-2. **Tunnel bandwidth**: If a tunnel sources from this interface with a bandwidth command
-3. **Tunnel description**: Speed hints in tunnel description (e.g., "100M MPLS", "BDW=500/500")
-4. **Interface description**: Speed hints in the interface description
-
-Speed patterns recognized in descriptions:
-- `BDW=500/500` - Carrier format for upload/download in Mbps (asymmetric supported)
-- `100M`, `100Mbps`, `100 Mbps`, `100Meg` - Symmetric speeds
-- `1G`, `1Gbps`, `1 Gig`, `1Gb`
-- `10G`, `10Gbps`
-- Patterns like "BDIA 100Meg", "Internet 1G", "50M MPLS"
-
-The `bandwidth_source` field indicates where the value came from:
-- `config`: From explicit `bandwidth` command on interface
-- `tunnel:TunnelX`: From tunnel's bandwidth command
-- `tunnel_desc:TunnelX`: From tunnel's description
-- `description`: From interface description
-
-### Traffic Shaping Variable Strategy
-Gateway templates **always** include traffic shaping with variable references:
-```json
-"traffic_shaping": {
-    "enabled": true,
-    "max_tx_kbps": "{{wan1_upload_kbps}}"
-}
-```
-
-Site variables (`wan1_upload_kbps`, `wan1_download_kbps`) are **only created when values exist**.
-If a site doesn't have the variable defined, that portion of the template doesn't "resolve" and
-the traffic shaping config doesn't become active for that port.
-
-### IP Configuration Types
-- **static**: `ip address X.X.X.X Y.Y.Y.Y`
-- **dhcp**: `ip address dhcp`
-- **pppoe**: `pppoe-client dial-pool-number X` or `pppoe enable group X`
-- **negotiated**: `ip address negotiated` (PPP/PPPoE negotiated)
-
-### Cellular Profile Parsing
-Cisco cellular/LTE configurations are parsed from:
-- `profile cellular data <id>` blocks
-- `controller Cellular <slot>` with `lte sim data-profile` commands
-
-Extracted cellular profile fields:
-- **profile_id**: Integer ID of the data profile
-- **apn**: APN name (e.g., "internet.carrier.com")
-- **authentication**: none, chap, pap, or pap_chap
-- **username**: APN username
-- **password**: APN password (Type 7 encoded passwords are decoded)
-- **slot**: SIM slot number (0 or 1)
-
-Example Cisco config:
-```
-profile cellular data 1
- apn internet.carrier.com
- authentication chap
- username apn_user password 7 070C285F4D
- 
-controller Cellular 0/2/0
- lte sim data-profile 1 slot 0
-```
-
-### WAN Site Variables
-Each WAN interface creates multiple site variables for the Mist portal:
-- `wan1` = interface name (e.g., "GigabitEthernet0/0/0")
-- `wan1_ip` = IP address (e.g., "10.1.1.1")
-- `wan1_subnet` = subnet mask (e.g., "255.255.255.0")
-- `wan1_gateway` = default gateway (e.g., "10.1.1.254")
-- `wan1_vlan` = VLAN ID if applicable (e.g., "100")
-- `wan1_type` = IP config type (static, dhcp, pppoe, negotiated)
-
-For LTE interfaces (wan_type == "lte"), additional variables are created:
-- `wan3_lte_apn` = APN name (e.g., "internet.carrier.com")
-- `wan3_lte_auth` = authentication type (none, chap, pap)
-- `wan3_lte_user` = APN username
-- `wan3_lte_pass` = APN password
-
-These variables can be referenced in gateway templates using `{{wan1}}`, `{{wan1_ip}}`, `{{wan3_lte_apn}}`, etc.
-
-### Network Site Variables
-Each LAN interface also creates network-specific site variables keyed by the
-Mist network name (e.g., "vlan0300"). These are referenced by the org-level
-network and service objects which use variable references instead of hard-coded
-values:
-- `vlan0300_network` = computed network address (e.g., "10.147.29.128")
-- `vlan0300_prefix` = prefix length (e.g., "26")
-- `vlan0300_vlan` = VLAN ID (e.g., "300")
-
-Org networks use `{{vlan0300_network}}/{{vlan0300_prefix}}` for the subnet field
-and `{{vlan0300_vlan}}` for the VLAN ID field. This allows the same org-level
-network definition to resolve to different values per site.
-
-## Power User Features
-
-When `POWERUSER=true` is set in `.env`, additional administrative buttons appear in the web UI.
-
-### Backup/Restore/Delete Operations
-These features provide bulk management of Mist organization objects:
-
-| Object Type | Backup | Restore | Delete All |
-|-------------|--------|---------|------------|
-| Service Policies | Yes | Yes | No |
-| Services | Yes | Yes | Yes |
-| Networks | Yes | Yes | Yes |
-
-### API Routes
-- `POST /api/poweruser/backup-service-policies` - Backup service policies to JSON
-- `GET /api/poweruser/list-service-policy-backups` - List available backups
-- `POST /api/poweruser/restore-service-policies` - Restore from backup (CONFIRM required)
-- `POST /api/poweruser/backup-services` - Backup services to JSON
-- `GET /api/poweruser/list-service-backups` - List available service backups
-- `POST /api/poweruser/restore-services` - Restore services (CONFIRM required)
-- `POST /api/poweruser/delete-all-services` - Delete all services (CONFIRM required)
-- `POST /api/poweruser/backup-networks` - Backup networks to JSON
-- `GET /api/poweruser/list-network-backups` - List available network backups
-- `POST /api/poweruser/restore-networks` - Restore networks (CONFIRM required)
-- `POST /api/poweruser/delete-all-networks` - Delete all networks (CONFIRM required)
-
-### Backup File Storage
-All backup files are stored in the `output/` folder with timestamp naming:
-- `service_policies_backup_YYYYMMDD_HHMMSS.json`
-- `services_backup_YYYYMMDD_HHMMSS.json`
-- `networks_backup_YYYYMMDD_HHMMSS.json`
-
-### Template Management Operations
-- **Unassign All Templates**: Removes gateway_template assignments from all sites
-- **Delete All Templates**: Deletes all gateway templates and device profiles
-- **Unassign Templated Devices**: Moves gateway devices to unassigned inventory
-
-## Container Development Workflow
-
-**CRITICAL**: Anytime changes are made to configuration files, Python scripts, templates, or static assets, you MUST rebuild and relaunch any running containers to apply the changes:
-
-```bash
-# Podman
-podman stop mist-cisco-converter
-podman rm mist-cisco-converter
-podman build --format docker -t mist-cisco-converter .
-podman run -d --name mist-cisco-converter -p 8000:8000 --env-file .env -v ./data:/app/data:Z -v ./input:/app/input:Z mist-cisco-converter
-
-# Docker
-docker stop mist-cisco-converter
-docker rm mist-cisco-converter
-docker build -t mist-cisco-converter -f Containerfile .
-docker run -d --name mist-cisco-converter -p 8000:8000 --env-file .env -v ./data:/app/data -v ./input:/app/input mist-cisco-converter
-```
-
-**Volume Mounts Required**:
-- `./data:/app/data` - Application logs and output files
-- `./input:/app/input` - Cisco configuration files to convert
-- `--env-file .env` - Environment variables (API tokens, org_id, theme, etc.)
-
-This ensures the container image includes all code changes. Static files and templates are baked into the image at build time.
-
-## When in Doubt
-1. **Check existing patterns** - grep for similar operations
-2. **Validate early, return early** - NASA/JPL defensive programming
-3. **Test in venv** - Windows 11 local development standard
-4. **Rebuild containers** - Code changes require container rebuild
-5. **Update docs** - Changelog in `docs/USER_GUIDE.md`
-
----
-
-**Remember**: This codebase prioritizes safety and operational clarity over clever abstractions. Explicit > Implicit. Readable > Concise. Safe > Fast.
-```
+Use `docs/CISCO_TO_MIST_MAPPING.md` for conversion details. Use the [Mist OpenAPI
+specification](https://github.com/mistsys/mist_openapi) for API details. Find
+the pinned `mistapi` version in `requirements.txt`.
