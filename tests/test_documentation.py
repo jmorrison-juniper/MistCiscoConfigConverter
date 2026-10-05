@@ -1,5 +1,6 @@
 """Regression checks for the landing page and its local documentation."""
 
+import hashlib
 import re
 import struct
 import unittest
@@ -11,6 +12,33 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DocumentationTests(unittest.TestCase):
+    def test_agent_instructions_use_the_canonical_file_and_spec_kit_path(self):
+        """Protect the shared rules and the Spec Kit output path."""
+        agents_file = ROOT / "AGENTS.md"  # Read the canonical shared instruction file.
+        instructions_file = ROOT / ".github" / "copilot-instructions.md"  # Read repository rules.
+        context_script = ROOT / ".specify" / "scripts" / "bash" / "update-agent-context.sh"  # Read Spec Kit targets.
+        digest = hashlib.sha256(agents_file.read_bytes()).hexdigest()  # Check the canonical content.
+        instructions = instructions_file.read_text(encoding="utf-8")  # Check the repository guidance.
+        script = context_script.read_text(encoding="utf-8")  # Check every generated target.
+        self.assertEqual(
+            digest,
+            "bf6d2bff3074941ecf2132acdfaa01edacdb1e7ef199961a910ebd9937021886",
+        )  # Reject a change to the canonical shared rules.
+        self.assertIn(".specify/memory/agent-context-*.md", instructions)  # Keep the context location clear.
+        protected_targets = re.findall(
+            r'^(?:CLAUDE_FILE|COPILOT_FILE|AGENTS_FILE|AMP_FILE|Q_FILE|BOB_FILE)="([^"]+)"',
+            script,
+            flags=re.MULTILINE,
+        )  # Find each Spec Kit target that must use the memory folder.
+        self.assertEqual(len(protected_targets), 6)  # Require one target for each protected agent type.
+        for target in protected_targets:
+            with self.subTest(target=target):
+                self.assertIn(
+                    "/.specify/memory/agent-context-",
+                    target,
+                )  # Keep every protected target in the memory folder.
+        self.assertIn(".specify/memory/agent-context-", script)  # Keep Spec Kit context output enabled.
+
     def test_landing_page_has_only_the_six_requested_sections(self):
         content = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertEqual(

@@ -205,6 +205,12 @@ CC BY-NC 4.0 - See [LICENSE](../LICENSE) for details.
 
 ## Changelog
 
+### Agent instruction files
+
+- Added shared `AGENTS.md` rules and repository-specific agent guidance.
+- Kept generated Spec Kit context under `.specify/memory/`.
+- Added an STE score check for the instruction files.
+
 ### Landing documentation
 
 - Moved detailed documentation under `docs/`.
