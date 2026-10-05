@@ -30,6 +30,9 @@ DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 LOG_FILE = DATA_DIR / "app.log"
 
+# The operator types this word before /api/apply changes a Mist organization.
+APPLY_CONFIRMATION_WORD = "APPLY"  # One fixed word lets an offline review and a script use the same check.
+
 
 def get_mist_connection() -> MistConnection:
     """Get fresh MistConnection instance.
@@ -1075,7 +1078,12 @@ def index():
     """Main page - config upload interface."""
     theme = get_theme()
     poweruser = is_poweruser()
-    return render_template("index.html", theme=theme, poweruser=poweruser)
+    return render_template(
+        "index.html",
+        theme=theme,
+        poweruser=poweruser,
+        apply_confirmation_word=APPLY_CONFIRMATION_WORD,
+    )  # Give the page the word that the server requires before an apply.
 
 
 @app.route("/health")
@@ -1471,10 +1479,26 @@ def apply_config():
     - selected_devices: list of device MACs for hub mode (optional)
     - configure_ha: boolean - whether to create HA cluster (requires 2 selected devices)
     - assign_to_site: boolean - whether to assign unassigned devices to site first
+    - confirmation: must equal APPLY_CONFIRMATION_WORD, or the request changes nothing
     """
-    data = request.get_json()
+    data = request.get_json(silent=True)  # Read the body without a Flask error page for bad JSON.
     if not data:
         return jsonify({"error": "No JSON data provided"}), 400
+    if not isinstance(data, dict):  # Reject a list or a scalar, because the route reads named fields.
+        return jsonify({"error": "JSON body must be an object"}), 400
+    
+    # Require the typed confirmation word before any Mist request.
+    confirmation = data.get("confirmation")  # Read the word that the operator typed.
+    if confirmation != APPLY_CONFIRMATION_WORD:  # Stop a scripted or accidental apply with no human step.
+        logger.warning(
+            "Apply rejected: confirmation word missing or incorrect (present=%s)",
+            confirmation is not None,
+        )  # Record the rejection without the typed value.
+        return jsonify({
+            "error": "Confirmation required",
+            "message": f"Send {{\"confirmation\": \"{APPLY_CONFIRMATION_WORD}\"}} to apply the settings to Mist"
+        }), 400  # Tell the caller the exact field and word, and apply nothing.
+    logger.info("Apply confirmation word accepted")  # Record that a human step occurred.
     
     device_name = data.get("device_name", "")
     gateway_type = data.get("gateway_type", "")

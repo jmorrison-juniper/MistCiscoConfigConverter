@@ -129,6 +129,23 @@ Use the drag-and-drop upload area to add files directly from the browser. Upload
 | `/api/files`   | GET    | List available config files in input folder              |
 | `/api/upload`  | POST   | Upload config file to input folder                       |
 | `/api/convert` | POST   | Convert config file (supports file selection and upload) |
+| `/api/apply`   | POST   | Apply the reviewed proposal to Mist. Needs `"confirmation": "APPLY"` |
+
+### Apply confirmation
+
+The apply operation changes the Mist organization. The confirmation dialog
+shows a text field below the proposal. Type `APPLY` in the field to enable the
+Confirm & Apply button. The application removes the typed word after a cancel
+or an apply.
+
+The server also checks the word. A request to `/api/apply` must contain the
+JSON value `"confirmation": "APPLY"`. If the field is missing or different, the
+server returns HTTP 400 with the error `Confirmation required`. The server then
+sends no request to Mist. The check is case-sensitive.
+
+Warning: a script that sends the confirmation word skips the review in the
+browser. The script can change the production organization, so examine the
+proposal before you send the word.
 
 ## Development
 
@@ -204,6 +221,12 @@ Backup files are stored in `output/` with timestamped filenames.
 CC BY-NC 4.0 - See [LICENSE](../LICENSE) for details.
 
 ## Changelog
+
+### Apply confirmation word
+
+- Added a typed `APPLY` confirmation to the apply dialog.
+- Made `/api/apply` reject a request that does not contain the confirmation word.
+- Added offline tests for a missing, an incorrect, and a correct confirmation word.
 
 ### Agent instruction files
 

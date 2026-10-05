@@ -88,8 +88,11 @@ files. Keep the README sections `What`, `How`, `Where`, `When`, `Why`, and `Who`
 ## Safety in this repository
 
 The app reads Cisco files from `input/`, writes logs to `data/`, and stores
-backups in `output/`. The browser requests confirmation before it sends a
-request to `/api/apply`. That route updates settings in Mist. Power user routes
+backups in `output/`. The route `/api/apply` updates settings in Mist. The
+browser enables its apply button only after the user types `APPLY`. The route
+rejects a request without the JSON value `"confirmation": "APPLY"`. It then
+sends no request to Mist. The constant `APPLY_CONFIRMATION_WORD` in `app.py`
+holds the word. Power user routes
 require `POWERUSER=true`. Routes that restore, delete, or unassign objects
 require the JSON value
 `"confirmation": "CONFIRM"`. Backup files use timestamped names in `output/`.

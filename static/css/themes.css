@@ -702,6 +702,24 @@ body:has(.poweruser-controls) .mist-status {
     font-weight: 500;
 }
 
+.confirm-word {
+    margin-top: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    color: var(--color-text-primary);
+}
+
+.confirm-word input {
+    padding: 0.5rem;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: var(--color-bg-main);
+    color: var(--color-text-primary);
+    font-family: var(--font-mono);
+    font-size: 1rem;
+}
+
 .modal-buttons {
     display: flex;
     gap: 1rem;
