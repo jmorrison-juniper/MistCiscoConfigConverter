@@ -1,0 +1,4 @@
+# The CodeQL analysis reads this file through the `config-file` input of
+# `.github/workflows/codeql.yml`. The repository holds no test fixtures, so the
+# file sets no `paths-ignore` list.
+name: "MistCiscoConfigConverter CodeQL Configuration"

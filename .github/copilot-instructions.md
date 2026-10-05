@@ -120,8 +120,22 @@ mark active work. The repository records its change history in
 on `main`. The STE workflow checks the README, the instruction files, and the
 three Markdown files in `docs/`. The other workflow reports stranded branches
 each week. The repository is public, so its standard GitHub-hosted workflow
-runs have no Actions-minute cost. It has no CodeQL workflow, `auto-merge` label,
-or pull request template. Dated changelog headings use `vYY.MM.DD`.
+runs have no Actions-minute cost. It has no `auto-merge` label or pull request
+template. Dated changelog headings use `vYY.MM.DD`.
+
+| Workflow | Check | Purpose |
+| - | - | - |
+| `tests.yml` | `test` | Runs the offline tests. Branch protection requires it. |
+| `ste-lint.yml` | `ste-lint / STE compliance` | Grades the Markdown files with `ste-linter`. |
+| `codeql.yml` | `codeql / Analyze (python)` | Examines the Python code with CodeQL. |
+| `stranded-branch-report.yml` | none | Reports branches with no pull request each week. |
+
+The CodeQL workflow runs on each pull request, on a push to `main`, each
+Monday, and on a manual request. It reads `.github/codeql/codeql-config.yml`.
+A later run does not cancel a `main` run. The owner adds the `CodeQL` and
+`codeql / Analyze (python)` checks to the required checks after the first
+successful `main` run. Each misthelper-devtools workflow pin names the
+v0.6.2 commit `da02d4c6a2163d1882f2ad25fce80b8ba38304d1`.
 
 ## Key files
 
