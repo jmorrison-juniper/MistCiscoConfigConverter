@@ -3759,6 +3759,25 @@ def poweruser_delete_all_networks():
         return jsonify({"error": str(error)}), 500
 
 
+def flask_debug_enabled() -> bool:
+    """Return True only when FLASK_DEBUG names debug mode on.
+
+    The Werkzeug debugger runs code that a browser sends, so debug mode stays
+    off unless the operator sets FLASK_DEBUG on purpose. The container never
+    sets it.
+    """
+    return os.environ.get("FLASK_DEBUG", "").strip().lower() in {"1", "true", "yes"}  # Default to off.
+
+
+def run_development_server() -> None:
+    """Start the Flask development server for `python app.py`.
+
+    Production uses Gunicorn. This server reads debug mode from FLASK_DEBUG.
+    """
+    debug_mode = flask_debug_enabled()  # Read the operator choice once.
+    logger.info("Starting the development server on port 8000 with debug=%s", debug_mode)  # Record the mode.
+    app.run(host="0.0.0.0", port=8000, debug=debug_mode)  # Serve until the operator stops the process.
+
+
 if __name__ == "__main__":
-    # Development server only - use Gunicorn in production
-    app.run(host="0.0.0.0", port=8000, debug=True)
+    run_development_server()  # Development server only. Use Gunicorn in production.
