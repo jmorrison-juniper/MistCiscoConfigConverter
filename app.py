@@ -136,6 +136,25 @@ def validate_input_filename(filename: str) -> str | None:
         return None
     return filename
 
+
+def resolve_contained_path(base_dir: Path, filename: object) -> Path | None:
+    """Return the real path of a file name inside one allowed directory.
+
+    The caller gets None when the name is not a plain file name or when the
+    real path, after symbolic links resolve, is outside the base directory.
+    This stops path traversal through "..", absolute paths, and symbolic links.
+    """
+    if not isinstance(filename, str):  # Reject a JSON value that is not text.
+        return None
+    if validate_input_filename(filename) is None:  # Reject separators, "..", and empty names first.
+        return None
+    base_real = os.path.realpath(base_dir)  # Resolve the allowed directory, including symbolic links.
+    candidate_real = os.path.realpath(os.path.join(base_real, filename))  # Resolve the requested file the same way.
+    if not candidate_real.startswith(base_real + os.sep):  # Require the file to stay inside the directory.
+        logger.warning("Rejected a path outside %s", base_dir.name)  # Record the rejection without the raw name.
+        return None
+    return Path(candidate_real)  # Give the caller the contained, resolved path.
+
 # Allowed file extensions for config uploads
 ALLOWED_EXTENSIONS = {".txt", ".conf", ".cfg", ".ios", ".config", ".log"}
 
@@ -1218,10 +1237,9 @@ def convert_config():
     # Method 1: File selected from input directory
     if request.form.get("selected_file"):
         filename = validate_input_filename(request.form["selected_file"])
-        if not filename:
+        filepath = resolve_contained_path(INPUT_DIR, filename) if filename else None  # Keep the read inside input/.
+        if not filename or filepath is None:
             return jsonify({"error": "Invalid filename"}), 400
-        
-        filepath = INPUT_DIR / filename
         
         if not filepath.exists():
             return jsonify({"error": f"File not found: {filename}"}), 404
@@ -2429,11 +2447,10 @@ def display_config():
         logger.debug(f"Selected file from input folder: {raw_filename}")
         
         filename = validate_input_filename(raw_filename)
-        if not filename:
+        filepath = resolve_contained_path(INPUT_DIR, filename) if filename else None  # Keep the read inside input/.
+        if not filename or filepath is None:
             logger.warning(f"Invalid filename rejected: {raw_filename}")
             return jsonify({"error": "Invalid filename"}), 400
-        
-        filepath = INPUT_DIR / filename
         logger.debug(f"Looking for file at: {filepath}")
         
         if not filepath.exists():
@@ -2998,7 +3015,7 @@ def poweruser_restore_service_policies():
         return jsonify({"error": "No filename specified"}), 400
     
     # Validate filename (prevent path traversal)
-    if ".." in filename or "/" in filename or "\\" in filename:
+    if not isinstance(filename, str) or ".." in filename or "/" in filename or "\\" in filename:
         return jsonify({"error": "Invalid filename"}), 400
     
     import json
@@ -3013,8 +3030,10 @@ def poweruser_restore_service_policies():
     }
     
     try:
-        filepath = os.path.join(OUTPUT_DIR, filename)
-        if not os.path.exists(filepath):
+        filepath = resolve_contained_path(OUTPUT_DIR, filename)  # Keep the backup read inside output/.
+        if filepath is None:
+            return jsonify({"error": "Invalid filename"}), 400
+        if not filepath.exists():
             return jsonify({"error": f"Backup file not found: {filename}"}), 404
         
         # Load backup data
@@ -3238,7 +3257,7 @@ def poweruser_restore_services():
         return jsonify({"error": "No filename specified"}), 400
     
     # Validate filename (prevent path traversal)
-    if ".." in filename or "/" in filename or "\\" in filename:
+    if not isinstance(filename, str) or ".." in filename or "/" in filename or "\\" in filename:
         return jsonify({"error": "Invalid filename"}), 400
     
     import json
@@ -3253,8 +3272,10 @@ def poweruser_restore_services():
     }
     
     try:
-        filepath = os.path.join(OUTPUT_DIR, filename)
-        if not os.path.exists(filepath):
+        filepath = resolve_contained_path(OUTPUT_DIR, filename)  # Keep the backup read inside output/.
+        if filepath is None:
+            return jsonify({"error": "Invalid filename"}), 400
+        if not filepath.exists():
             return jsonify({"error": f"Backup file not found: {filename}"}), 404
         
         # Load backup data
@@ -3560,7 +3581,7 @@ def poweruser_restore_networks():
         return jsonify({"error": "No filename specified"}), 400
     
     # Validate filename (prevent path traversal)
-    if ".." in filename or "/" in filename or "\\" in filename:
+    if not isinstance(filename, str) or ".." in filename or "/" in filename or "\\" in filename:
         return jsonify({"error": "Invalid filename"}), 400
     
     import json
@@ -3575,8 +3596,10 @@ def poweruser_restore_networks():
     }
     
     try:
-        filepath = os.path.join(OUTPUT_DIR, filename)
-        if not os.path.exists(filepath):
+        filepath = resolve_contained_path(OUTPUT_DIR, filename)  # Keep the backup read inside output/.
+        if filepath is None:
+            return jsonify({"error": "Invalid filename"}), 400
+        if not filepath.exists():
             return jsonify({"error": f"Backup file not found: {filename}"}), 404
         
         # Load backup data
