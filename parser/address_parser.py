@@ -188,7 +188,8 @@ def parse_snmp_location(location: str) -> ParsedAddress:
     
     # Clean up city name (remove state code if it got included)
     if parsed.city and parsed.state_code:
-        parsed.city = re.sub(r'\s*' + parsed.state_code + r'\s*', '', parsed.city).strip()
+        city_words = parsed.city.split()  # Compare whole words so a state code does not cut a city name.
+        parsed.city = " ".join(word for word in city_words if word != parsed.state_code)  # Drop the state code without a regex built from input.
     
     # Default to US if we found a valid state
     if parsed.state_code and not parsed.country_code:
