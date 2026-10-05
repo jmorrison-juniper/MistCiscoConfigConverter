@@ -137,6 +137,29 @@ def validate_input_filename(filename: str) -> str | None:
     return filename
 
 
+class ErrorReply:
+    """Build error text for API clients that holds no exception detail.
+
+    CodeQL rule py/stack-trace-exposure flags exception text in a response.
+    The full exception goes to the server log, and the client gets a fixed
+    message that names the failed operation.
+    """
+
+    LOG_HINT = "See the server log for details."  # Tell the operator where the detail is.
+
+    @staticmethod
+    def item(context: str, error: Exception) -> str:
+        """Log one failed item with its traceback and return safe text for a results list."""
+        logger.error("%s failed", context, exc_info=error)  # Keep the full detail on the server only.
+        return f"{context}: the operation failed. {ErrorReply.LOG_HINT}"  # Give the client no exception text.
+
+    @staticmethod
+    def response(action: str, status: int = 500) -> tuple:
+        """Return a JSON error response for a failed route after the caller logs the exception."""
+        message = f"Error {action}. {ErrorReply.LOG_HINT}"  # Name the operation, not the exception.
+        return jsonify({"error": message}), status  # Keep the existing JSON shape and status.
+
+
 def resolve_contained_path(base_dir: Path, filename: object) -> Path | None:
     """Return the real path of a file name inside one allowed directory.
 
@@ -2514,7 +2537,7 @@ def display_config():
         })
     except Exception as error:
         logger.exception(f"Error parsing config {filename}: {error}")
-        return jsonify({"error": f"Parse error: {str(error)}"}), 500
+        return ErrorReply.response("parsing config")  # Hide the exception text from the client.
 
 
 # =============================================================================
@@ -2575,7 +2598,7 @@ def poweruser_unassign_all_templates():
                         results["sites_cleared"] += 1
                         logger.info(f"POWERUSER: Cleared template from site {site_name}")
                 except Exception as error:
-                    results["errors"].append(f"Site {site_name}: {str(error)}")
+                    results["errors"].append(ErrorReply.item(f"Site {site_name}", error))  # Log the detail and report safe text.
         
         # Get all device profiles (hub profiles)
         session = profile_manager.connection.session
@@ -2616,9 +2639,9 @@ def poweruser_unassign_all_templates():
                                             f"from profile {profile_name}"
                                         )
                         except Exception as error:
-                            results["errors"].append(f"Profile {profile_name}: {str(error)}")
+                            results["errors"].append(ErrorReply.item(f"Profile {profile_name}", error))  # Log the detail and report safe text.
             except Exception as error:
-                results["errors"].append(f"Profile listing: {str(error)}")
+                results["errors"].append(ErrorReply.item(f"Profile listing", error))  # Log the detail and report safe text.
         
         logger.warning(
             f"POWERUSER: Completed unassign-all. "
@@ -2634,7 +2657,7 @@ def poweruser_unassign_all_templates():
         
     except Exception as error:
         logger.exception(f"POWERUSER: Error in unassign-all: {error}")
-        return jsonify({"error": str(error)}), 500
+        return ErrorReply.response("in unassign-all")  # Hide the exception text from the client.
 
 
 @app.route("/api/poweruser/delete-all-templates", methods=["POST"])
@@ -2698,9 +2721,9 @@ def poweruser_delete_all_templates():
                                 f"Template {template_name}: HTTP {delete_response.status_code}"
                             )
                     except Exception as error:
-                        results["errors"].append(f"Template {template_name}: {str(error)}")
+                        results["errors"].append(ErrorReply.item(f"Template {template_name}", error))  # Log the detail and report safe text.
         except Exception as error:
-            results["errors"].append(f"Template listing: {str(error)}")
+            results["errors"].append(ErrorReply.item(f"Template listing", error))  # Log the detail and report safe text.
         
         # Delete all device profiles (hub profiles)
         try:
@@ -2724,9 +2747,9 @@ def poweruser_delete_all_templates():
                                 f"Profile {profile_name}: HTTP {delete_response.status_code}"
                             )
                     except Exception as error:
-                        results["errors"].append(f"Profile {profile_name}: {str(error)}")
+                        results["errors"].append(ErrorReply.item(f"Profile {profile_name}", error))  # Log the detail and report safe text.
         except Exception as error:
-            results["errors"].append(f"Profile listing: {str(error)}")
+            results["errors"].append(ErrorReply.item(f"Profile listing", error))  # Log the detail and report safe text.
         
         logger.warning(
             f"POWERUSER: Completed delete-all. "
@@ -2742,7 +2765,7 @@ def poweruser_delete_all_templates():
         
     except Exception as error:
         logger.exception(f"POWERUSER: Error in delete-all: {error}")
-        return jsonify({"error": str(error)}), 500
+        return ErrorReply.response("in delete-all")  # Hide the exception text from the client.
 
 
 @app.route("/api/poweruser/unassign-templated-devices", methods=["POST"])
@@ -2810,7 +2833,7 @@ def poweruser_unassign_templated_devices():
                             all_macs_to_unassign.add(mac)
                             logger.debug(f"POWERUSER: Will unassign gateway {mac} from templated site {site_name}")
                 except Exception as error:
-                    results["errors"].append(f"Site {site_name} device list: {str(error)}")
+                    results["errors"].append(ErrorReply.item(f"Site {site_name} device list", error))  # Log the detail and report safe text.
         
         # === Part 2: Find devices with hub profiles (deviceprofile_id) ===
         if session:
@@ -2831,7 +2854,7 @@ def poweruser_unassign_templated_devices():
                                 device_name = device.get("name", mac)
                                 logger.debug(f"POWERUSER: Will unassign hub device {device_name} ({mac})")
             except Exception as error:
-                results["errors"].append(f"Org device listing: {str(error)}")
+                results["errors"].append(ErrorReply.item(f"Org device listing", error))  # Log the detail and report safe text.
         
         # Unassign all collected devices in one batch
         macs_list = list(all_macs_to_unassign)
@@ -2866,7 +2889,7 @@ def poweruser_unassign_templated_devices():
         
     except Exception as error:
         logger.exception(f"POWERUSER: Error in unassign-templated-devices: {error}")
-        return jsonify({"error": str(error)}), 500
+        return ErrorReply.response("in unassign-templated-devices")  # Hide the exception text from the client.
 
 
 @app.route("/api/poweruser/backup-service-policies", methods=["POST"])
@@ -2938,7 +2961,7 @@ def poweruser_backup_service_policies():
         
     except Exception as error:
         logger.exception(f"POWERUSER: Error backing up service policies: {error}")
-        return jsonify({"error": str(error)}), 500
+        return ErrorReply.response("backing up service policies")  # Hide the exception text from the client.
 
 
 @app.route("/api/poweruser/list-service-policy-backups", methods=["GET"])
@@ -2985,7 +3008,7 @@ def poweruser_list_service_policy_backups():
         
     except Exception as error:
         logger.exception(f"POWERUSER: Error listing backup files: {error}")
-        return jsonify({"error": str(error)}), 500
+        return ErrorReply.response("listing backup files")  # Hide the exception text from the client.
 
 
 @app.route("/api/poweruser/restore-service-policies", methods=["POST"])
@@ -3093,7 +3116,7 @@ def poweruser_restore_service_policies():
                     else:
                         results["errors"].append(f"Create {policy_name}: HTTP {create_response.status_code}")
             except Exception as error:
-                results["errors"].append(f"{policy_name}: {str(error)}")
+                results["errors"].append(ErrorReply.item(f"{policy_name}", error))  # Log the detail and report safe text.
         
         logger.warning(
             f"POWERUSER: Completed restore. Created: {results['created']}, "
@@ -3108,7 +3131,7 @@ def poweruser_restore_service_policies():
         
     except Exception as error:
         logger.exception(f"POWERUSER: Error restoring service policies: {error}")
-        return jsonify({"error": str(error)}), 500
+        return ErrorReply.response("restoring service policies")  # Hide the exception text from the client.
 
 
 @app.route("/api/poweruser/backup-services", methods=["POST"])
@@ -3180,7 +3203,7 @@ def poweruser_backup_services():
         
     except Exception as error:
         logger.exception(f"POWERUSER: Error backing up services: {error}")
-        return jsonify({"error": str(error)}), 500
+        return ErrorReply.response("backing up services")  # Hide the exception text from the client.
 
 
 @app.route("/api/poweruser/list-service-backups", methods=["GET"])
@@ -3227,7 +3250,7 @@ def poweruser_list_service_backups():
         
     except Exception as error:
         logger.exception(f"POWERUSER: Error listing service backup files: {error}")
-        return jsonify({"error": str(error)}), 500
+        return ErrorReply.response("listing service backup files")  # Hide the exception text from the client.
 
 
 @app.route("/api/poweruser/restore-services", methods=["POST"])
@@ -3335,7 +3358,7 @@ def poweruser_restore_services():
                     else:
                         results["errors"].append(f"Create {service_name}: HTTP {create_response.status_code}")
             except Exception as error:
-                results["errors"].append(f"{service_name}: {str(error)}")
+                results["errors"].append(ErrorReply.item(f"{service_name}", error))  # Log the detail and report safe text.
         
         logger.warning(
             f"POWERUSER: Completed service restore. Created: {results['created']}, "
@@ -3350,7 +3373,7 @@ def poweruser_restore_services():
         
     except Exception as error:
         logger.exception(f"POWERUSER: Error restoring services: {error}")
-        return jsonify({"error": str(error)}), 500
+        return ErrorReply.response("restoring services")  # Hide the exception text from the client.
 
 
 @app.route("/api/poweruser/delete-all-services", methods=["POST"])
@@ -3420,7 +3443,7 @@ def poweruser_delete_all_services():
                 else:
                     results["errors"].append(f"Delete {service_name}: HTTP {delete_response.status_code}")
             except Exception as error:
-                results["errors"].append(f"{service_name}: {str(error)}")
+                results["errors"].append(ErrorReply.item(f"{service_name}", error))  # Log the detail and report safe text.
         
         logger.warning(f"POWERUSER: Deleted {results['deleted']} services")
         
@@ -3432,7 +3455,7 @@ def poweruser_delete_all_services():
         
     except Exception as error:
         logger.exception(f"POWERUSER: Error deleting services: {error}")
-        return jsonify({"error": str(error)}), 500
+        return ErrorReply.response("deleting services")  # Hide the exception text from the client.
 
 
 @app.route("/api/poweruser/backup-networks", methods=["POST"])
@@ -3504,7 +3527,7 @@ def poweruser_backup_networks():
         
     except Exception as error:
         logger.exception(f"POWERUSER: Error backing up networks: {error}")
-        return jsonify({"error": str(error)}), 500
+        return ErrorReply.response("backing up networks")  # Hide the exception text from the client.
 
 
 @app.route("/api/poweruser/list-network-backups", methods=["GET"])
@@ -3551,7 +3574,7 @@ def poweruser_list_network_backups():
         
     except Exception as error:
         logger.exception(f"POWERUSER: Error listing network backup files: {error}")
-        return jsonify({"error": str(error)}), 500
+        return ErrorReply.response("listing network backup files")  # Hide the exception text from the client.
 
 
 @app.route("/api/poweruser/restore-networks", methods=["POST"])
@@ -3659,7 +3682,7 @@ def poweruser_restore_networks():
                     else:
                         results["errors"].append(f"Create {network_name}: HTTP {create_response.status_code}")
             except Exception as error:
-                results["errors"].append(f"{network_name}: {str(error)}")
+                results["errors"].append(ErrorReply.item(f"{network_name}", error))  # Log the detail and report safe text.
         
         logger.warning(
             f"POWERUSER: Completed network restore. Created: {results['created']}, "
@@ -3674,7 +3697,7 @@ def poweruser_restore_networks():
         
     except Exception as error:
         logger.exception(f"POWERUSER: Error restoring networks: {error}")
-        return jsonify({"error": str(error)}), 500
+        return ErrorReply.response("restoring networks")  # Hide the exception text from the client.
 
 
 @app.route("/api/poweruser/delete-all-networks", methods=["POST"])
@@ -3744,7 +3767,7 @@ def poweruser_delete_all_networks():
                 else:
                     results["errors"].append(f"Delete {network_name}: HTTP {delete_response.status_code}")
             except Exception as error:
-                results["errors"].append(f"{network_name}: {str(error)}")
+                results["errors"].append(ErrorReply.item(f"{network_name}", error))  # Log the detail and report safe text.
         
         logger.warning(f"POWERUSER: Deleted {results['deleted']} networks")
         
@@ -3756,7 +3779,7 @@ def poweruser_delete_all_networks():
         
     except Exception as error:
         logger.exception(f"POWERUSER: Error deleting networks: {error}")
-        return jsonify({"error": str(error)}), 500
+        return ErrorReply.response("deleting networks")  # Hide the exception text from the client.
 
 
 def flask_debug_enabled() -> bool:

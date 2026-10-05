@@ -15,6 +15,8 @@ from requests.adapters import HTTPAdapter
 # Loose timeout (2 min) to handle slow API responses while preventing indefinite hangs
 DEFAULT_TIMEOUT = (30, 120)
 
+CONNECTION_FAILURE_MESSAGE = "Mist API connection check failed. See the server log for details."  # Safe text for API clients.
+
 
 class TimeoutHTTPAdapter(HTTPAdapter):
     """HTTP adapter that forces timeout on all requests.
@@ -139,8 +141,8 @@ class MistConnection:
             else:
                 result["error"] = f"API returned status {response.status_code}"
         except Exception as error:
-            result["error"] = str(error)
-            self._logger.error(f"Mist API connection check failed: {error}")
+            result["error"] = CONNECTION_FAILURE_MESSAGE  # Give the client no exception text.
+            self._logger.exception(f"Mist API connection check failed: {error}")  # Keep the traceback in the server log.
         
         return result
     

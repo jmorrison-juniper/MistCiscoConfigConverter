@@ -230,6 +230,7 @@ CC BY-NC 4.0 - See [LICENSE](../LICENSE) for details.
 - Turned off Flask debug mode by default. Set `FLASK_DEBUG=true` to turn it on.
 - Removed MAC addresses, password fields, and street addresses from the logs. The logs now give counts and list positions.
 - Removed a regex built from address text. A state code inside a longer city name, such as `CA` in `CAMBRIDGE`, now stays in the city. Removed a slow regex from the configuration size parse.
+- Removed exception text from API error responses. A failed request now names the failed operation and points to the server log. The server log keeps the full traceback.
 
 ### Apply confirmation word
 
