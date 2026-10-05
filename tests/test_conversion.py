@@ -147,5 +147,70 @@ class ConversionTests(unittest.TestCase):
         self.assertEqual(parsed["summary"]["interface_count"], 0)
 
 
+class ApplyConfirmationTests(unittest.TestCase):
+    """Prove that /api/apply needs the typed word before it touches Mist."""
+
+    APPLY_BODY = {"device_name": "edge-branch-01", "gateway_type": "branch"}  # A valid body except for the word.
+
+    def setUp(self):
+        """Create a Flask test client so no network request leaves the test."""
+        self.client = converter_app.app.test_client()  # Send requests to the app in memory.
+
+    def post_apply(self, extra: dict) -> tuple:
+        """Send an apply request with a mocked Mist connection and return the response and the mock."""
+        with patch.object(converter_app, "get_mist_connection") as connection_factory:  # Block each live Mist call.
+            connection_factory.return_value.check_connection.return_value = {
+                "connected": False,
+                "error": "offline test",
+            }  # Stop the route at the first Mist step after the word check.
+            response = self.client.post("/api/apply", json={**self.APPLY_BODY, **extra})  # Send the request.
+        return response, connection_factory  # Give the response and the call record to the test.
+
+    def test_missing_confirmation_is_rejected_before_mist_calls(self):
+        """A request with no confirmation field changes nothing."""
+        response, connection_factory = self.post_apply({})  # Omit the confirmation field.
+        self.assertEqual(response.status_code, 400)  # Reject the request.
+        self.assertEqual(response.get_json()["error"], "Confirmation required")  # Give a clear JSON error.
+        self.assertIn(converter_app.APPLY_CONFIRMATION_WORD, response.get_json()["message"])  # Name the word.
+        connection_factory.assert_not_called()  # Prove that no Mist request started.
+
+    def test_wrong_confirmation_is_rejected_before_mist_calls(self):
+        """A request with an incorrect word changes nothing."""
+        for word in ["apply", "CONFIRM", " APPLY", "", None, ["APPLY"]]:  # Test case, space, other words, and types.
+            with self.subTest(word=word):
+                response, connection_factory = self.post_apply({"confirmation": word})  # Send the wrong word.
+                self.assertEqual(response.status_code, 400)  # Reject the request.
+                self.assertEqual(response.get_json()["error"], "Confirmation required")  # Give a clear JSON error.
+                connection_factory.assert_not_called()  # Prove that no Mist request started.
+
+    def test_matching_confirmation_reaches_the_mist_connection_check(self):
+        """A request with the correct word passes the gate and reaches the mocked Mist check."""
+        response, connection_factory = self.post_apply(
+            {"confirmation": converter_app.APPLY_CONFIRMATION_WORD}
+        )  # Send the correct word.
+        self.assertEqual(response.status_code, 503)  # Stop at the mocked offline connection, not at the gate.
+        self.assertIn("Mist API not connected", response.get_json()["error"])  # Prove the gate let it through.
+        connection_factory.assert_called_once()  # Prove that the route reached the Mist step.
+
+    def test_non_object_json_body_is_rejected(self):
+        """A JSON list cannot pass the gate."""
+        with patch.object(converter_app, "get_mist_connection") as connection_factory:  # Block each live Mist call.
+            response = self.client.post("/api/apply", json=["APPLY"])  # Send a list instead of an object.
+        self.assertEqual(response.status_code, 400)  # Reject the request.
+        connection_factory.assert_not_called()  # Prove that no Mist request started.
+
+    def test_page_disables_apply_until_the_word_is_typed(self):
+        """The page gives the word to the browser and starts with the apply button disabled."""
+        with patch.object(converter_app, "get_mist_connection") as connection_factory:  # Block each live Mist call.
+            page = self.client.get("/").get_data(as_text=True)  # Render the interface.
+        connection_factory.assert_not_called()  # The page render needs no Mist request.
+        self.assertIn('id="applyConfirmInput"', page)  # Show the field for the typed word.
+        self.assertIn(
+            f'data-confirmation-word="{converter_app.APPLY_CONFIRMATION_WORD}"', page
+        )  # Use the server word in the browser.
+        self.assertRegex(page, r'id="applyConfirmBtn" disabled>')  # Start with the apply button disabled.
+        self.assertIn("confirmation: typedConfirmation", page)  # Send the typed word to the server.
+
+
 if __name__ == "__main__":
     unittest.main()

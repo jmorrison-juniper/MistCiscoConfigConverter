@@ -32,9 +32,14 @@ Select Convert to Mist to view the proposal. This screen shows the local
 parser's output. Without Mist credentials, cloud object checks cannot verify
 whether a site, template, network, or service already exists.
 
+The capture shows the end of the proposal dialog. Below the proposal, a text
+field asks for the word `APPLY`. The Confirm & Apply button stays disabled until
+you type the word. The server rejects an apply request that does not contain the
+word. Refer to [Apply confirmation](USER_GUIDE.md#apply-confirmation).
+
 ![Conversion proposal](screenshots/proposal.png)
 
-Do not select the apply button during an offline review. Applying settings
+Do not type the confirmation word during an offline review. Applying settings
 requires a configured Mist organization and changes cloud objects.
 
 ## Capture procedure
@@ -49,7 +54,8 @@ requires a configured Mist organization and changes cloud objects.
 4. Upload `docs/examples/documentation-branch.cfg`. Select Branch and SRX, then
    capture the selection screen.
 5. Select Display Only, wait for the parsed result, then capture the page.
-6. Select Convert to Mist, wait for the proposal, then capture it. Do not apply.
+6. Select Convert to Mist and wait for the proposal. Scroll the dialog to its
+   end, then capture it. Do not type the confirmation word, and do not apply.
 
 ```bash
 MIST_APITOKEN='' org_id='' MIST_HOST=127.0.0.1 POWERUSER=false \

@@ -142,9 +142,13 @@
             <div class="modal-content">
                 <h3>Confirm Conversion</h3>
                 <div id="confirmDetails"></div>
+                <div class="confirm-word">
+                    <label for="applyConfirmInput">Apply changes the Mist organization. Type <strong>{{ apply_confirmation_word }}</strong> to enable the apply button.</label>
+                    <input type="text" id="applyConfirmInput" autocomplete="off" spellcheck="false" data-confirmation-word="{{ apply_confirmation_word }}">
+                </div>
                 <div class="modal-buttons">
                     <button type="button" class="btn btn-secondary" id="cancelConfirmBtn">Cancel</button>
-                    <button type="button" class="btn btn-primary" id="applyConfirmBtn">Confirm & Apply</button>
+                    <button type="button" class="btn btn-primary" id="applyConfirmBtn" disabled>Confirm & Apply</button>
                 </div>
             </div>
         </div>
@@ -778,6 +782,21 @@
         const confirmDetails = document.getElementById('confirmDetails');
         const cancelConfirmBtn = document.getElementById('cancelConfirmBtn');
         const applyConfirmBtn = document.getElementById('applyConfirmBtn');
+        const applyConfirmInput = document.getElementById('applyConfirmInput');  // The operator types the word here.
+        const applyConfirmationWord = applyConfirmInput.dataset.confirmationWord;  // The server sends the required word.
+        
+        // Enable the apply button only when the typed word matches exactly.
+        function updateApplyConfirmState() {
+            applyConfirmBtn.disabled = applyConfirmInput.value.trim() !== applyConfirmationWord;  // Block the apply until the word matches.
+        }
+        
+        // Clear the typed word so each proposal needs a new confirmation.
+        function resetApplyConfirmation() {
+            applyConfirmInput.value = '';  // Remove the word from the previous proposal.
+            updateApplyConfirmState();  // Disable the apply button again.
+        }
+        
+        applyConfirmInput.addEventListener('input', updateApplyConfirmState);  // Check the word at each keystroke.
         
         convertBtn.addEventListener('click', async () => {
             convertBtn.disabled = true;
@@ -1411,6 +1430,7 @@
             }
             
             confirmDetails.innerHTML = confirmHtml;
+            resetApplyConfirmation();  // Require a new typed word for this proposal.
             confirmModal.style.display = 'flex';
             
             // For hub, branch, or standalone mode, check for existing gateways or offer unassigned inventory
@@ -1584,10 +1604,13 @@
         cancelConfirmBtn.addEventListener('click', () => {
             confirmModal.style.display = 'none';
             pendingProposal = null;
+            resetApplyConfirmation();  // Do not keep the word after a cancel.
         });
         
         applyConfirmBtn.addEventListener('click', async () => {
             if (!pendingProposal) return;
+            const typedConfirmation = applyConfirmInput.value.trim();  // Read the word that the operator typed.
+            if (typedConfirmation !== applyConfirmationWord) return;  // Stop if the word does not match.
             
             applyConfirmBtn.disabled = true;
             applyConfirmBtn.textContent = 'Applying...';
@@ -1631,7 +1654,8 @@
                 parsed_data: pendingProposal.parsed_data || {},
                 override_ntp: overrideNtp,
                 override_dns: overrideDns,
-                override_syslog: overrideSyslog
+                override_syslog: overrideSyslog,
+                confirmation: typedConfirmation  // The server checks this word before it changes Mist.
             };
             
             try {
@@ -1661,8 +1685,8 @@
                 showMessage('Error: ' + error.message, 'error');
             }
             
-            applyConfirmBtn.disabled = false;
             applyConfirmBtn.textContent = 'Confirm & Apply';
+            resetApplyConfirmation();  // Require a new typed word before the next apply.
         });
 
         // ==================================================
