@@ -805,9 +805,9 @@ class CiscoConfigParser:
             
             # Config size
             elif "Current configuration :" in line:
-                match = re.search(r"(\d+) bytes", line)
-                if match:
-                    self.system.config_size_bytes = int(match.group(1))
+                size_words = line.split("Current configuration :", 1)[1].split()  # Read the words after the label with no backtracking regex.
+                if len(size_words) >= 2 and size_words[0].isdigit() and size_words[1] == "bytes":  # Accept only the "<number> bytes" form.
+                    self.system.config_size_bytes = int(size_words[0])  # Store the configuration size in bytes.
             
             # Services
             elif line.startswith("service "):
