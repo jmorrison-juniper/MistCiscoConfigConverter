@@ -9,6 +9,28 @@ gateway settings. Review the proposed settings before you apply them.
 
 ## How
 
+For local development on macOS or Linux, install Python 3.13 or later.
+From the repository directory, run:
+
+```sh
+python3.13 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+cp .env.example .env
+```
+
+Edit `.env` to set `MIST_APITOKEN`, `MIST_HOST`, `org_id`, and a random
+`SECRET_KEY`. See the [configuration instructions](docs/USER_GUIDE.md#configuration).
+Then start the application:
+
+```sh
+python app.py
+```
+
+Open <http://localhost:8000>. Use this server for local development only.
+See the [detailed setup instructions](docs/USER_GUIDE.md#development) for
+Windows and production use, or the [container quick-start](docs/USER_GUIDE.md#quick-start).
+
 Select or upload a Cisco configuration, choose the gateway role and hardware,
 then review the conversion. See the [user guide](docs/USER_GUIDE.md) for setup,
 configuration, API routes, development, and change history.
